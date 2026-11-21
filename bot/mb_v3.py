@@ -35,7 +35,7 @@ from mb_bot import TimedBot, dist2, unit, wrap
 
 PI = math.pi
 TAU = 2 * PI
-DEFAULT_FLAGS = {"focus", "npcsafe"}  # submitted default (sim A/B +0.42 vs mechbot, CI +0.23..+0.60)
+DEFAULT_FLAGS = set()  # practice: focus+npcsafe scored 3.65 (< mechbot 4.13); sim drones ~3x too dangerous
 _env = os.environ.get("MB_FLAGS")
 FLAGS = set(x.strip() for x in _env.split(",") if x.strip()) if _env is not None else set(DEFAULT_FLAGS)
 
@@ -77,6 +77,7 @@ class V3Bot(TimedBot):
         if "close90" in self.flags:
             self.close_d = 90.0
         self.hp_w, self.stick_s, self.stick_b = 0.03, 3.0, 45.0
+        self.laser_min_d = 35.0 if "laserclose" in self.flags else 0.0
         if "focus" in self.flags:
             self.hp_w, self.stick_s, self.stick_b = 0.08, 6.0, 90.0
         if "npcsafe" in self.flags:
@@ -468,7 +469,7 @@ class V3Bot(TimedBot):
         elif laser and (laser.get("charge", 0) > 0 or laser["cooldown"] < (1.2 if self.laser_pref else 0.5)
                         or ("laserlong" in self.flags and d > 110)) \
                 and d < laser["stats"].get("range", 280) * 0.95 and (los or laser.get("charge", 0) > 0) \
-                and not ("laserclose" in self.flags and d < 35 and laser.get("charge", 0) == 0):
+                and not (d < self.laser_min_d and laser.get("charge", 0) == 0):
             primary = "laser"
         elif gun and gun.get("reload", 0) == 0 and gun.get("ammo", 1) > 0 and d < gun["stats"].get("range", 230) and los:
             primary = "gun"
@@ -523,7 +524,8 @@ class V3Bot(TimedBot):
                     fire[si] = True   # it will auto-fire anyway
                 else:
                     fire[si] = True
-            elif laser["cooldown"] <= 0.05 and los and d < ls.get("range", 280) * 0.95 and ey < 0.6:
+            elif laser["cooldown"] <= 0.05 and los and d < ls.get("range", 280) * 0.95 and ey < 0.6 \
+                    and d >= self.laser_min_d:
                 fire[si] = True  # start charging
         # mortar
         if mortar and mortar["cooldown"] <= 0.05 and d > 18:

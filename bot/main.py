@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mechfight as mf  # noqa: E402
 
-POLICY = "v3"
+POLICY = "mb"
 
 
 def policy_class(name=None):
