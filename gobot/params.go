@@ -39,12 +39,13 @@ func globals() map[string]float64 {
 		"lose_three_hp": 0.8, "lose_low_hp": 0.35, "closing_v": 3, "closing_r": 180, "weak_frac": 0.4,
 		"weak_r": 160, "aimed_r": 190, "struck_s": 6, "lethal": 1, "sidestep": 1, "drops": 0,
 		"drone_farm": 1, "crate_farm": 1, "cube_v": 75,
-		"esc_guard":     0,   // 1 = give up a pocket escape whose walk to the takeoff makes no progress for 2 s (5 s pause)
-		"lethal_k":      0.8, // early laser release when this share of the partial-charge damage kills
-		"laser_v":       150, // loot value of a sought laser pickup (minimum)
-		"crate_nolaser": 1,   // crate loot value multiplier while we hold no laser (crates can drop weapons)
-		"fight_boost":   0,   // >0: in a fight, boost while energy is above this (not while charging a laser; lightning needs > 60)
-		"dodge_boost":   0,   // >0: boost while sidestepping when energy is above this
+		"esc_guard":      0,   // 1 = give up a pocket escape whose walk to the takeoff makes no progress for 2 s (5 s pause)
+		"lethal_k":       0.8, // early laser release when this share of the partial-charge damage kills
+		"laser_v":        150, // loot value of a sought laser pickup (minimum)
+		"crate_nolaser":  1,   // crate loot value multiplier while we hold no laser (crates can drop weapons)
+		"fight_boost":    0,   // >0: in a fight, boost while energy is above this (not while charging a laser; lightning needs > 60)
+		"dodge_boost":    0,   // >0: boost while sidestepping when energy is above this
+		"early_gunned_s": 0,   // >0: until this match time, back off from a laser carrier while we have no laser (any HP)
 	}
 }
 

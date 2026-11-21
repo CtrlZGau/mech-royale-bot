@@ -90,6 +90,7 @@ Global switches (`g.*`):
 | `crate_nolaser` | 1 | crate loot value multiplier while no laser is held (crates can drop weapons) |
 | `fight_boost` | 0 | if > 0: in a fight, boost while energy is above this (not while charging a laser; with lightning only above 60) |
 | `dodge_boost` | 0 | if > 0: boost while sidestepping when energy is above this |
+| `early_gunned_s` | 0 | if > 0: until this match time, back off from a mech carrying a laser while we have none (beyond 30 m, at any HP) |
 
 ---
 

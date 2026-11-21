@@ -181,6 +181,8 @@ def main():
             continue
         if not EVERY and "Showdown" not in (m["chan"].get("title") or ""):
             continue
+        if os.environ.get("ONLY") and os.environ["ONLY"] not in ((m["head"].get("showdown") or {}).get("title") or ""):
+            continue
         used += 1
         names, per, per_list, fights, res = analyse(m)
         allfights += [(names, f) for f in fights]

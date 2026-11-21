@@ -1184,6 +1184,9 @@ func (b *Bot) Act(obs *Obs) Action {
 
 	// ---- when to back off
 	underGunned := target != nil && target.carries("laser") && laser == nil && target.d > 55 && hpf < 0.8
+	if eg := b.g["early_gunned_s"]; eg > 0 && t < eg && target != nil && target.carries("laser") && laser == nil && target.d > 30 {
+		underGunned = true // early on, do not trade a gun against a laser
+	}
 	overrun := crowd >= 3 || (crowd == 2 && hpf < 0.65) || underGunned
 	if !b.backing && ((hpf < K["pull_hp"] && t-b.dangerT < 2) || overrun) {
 		b.backing = true
