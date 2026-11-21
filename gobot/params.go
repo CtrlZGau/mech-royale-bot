@@ -47,6 +47,10 @@ func globals() map[string]float64 {
 		"dodge_boost":    0,   // >0: boost while sidestepping when energy is above this
 		"early_gunned_s": 0,   // >0: until this match time, back off from a laser carrier while we have no laser (any HP)
 		"end_ghost":      0,   // >0: in a practice match, once the next circle is this small, play the cautious profile to the end
+		"watch":          0,   // 1 = with nothing to shoot, point the torso (vision wedge) at heard fire / laser charging / last seen enemy; 2 = sounds only
+		"snipe_mem":      0,   // 1 = remember where hits came from; waiting spots in those shooters' line of fire are avoided
+		"poke_r":         0,   // >0 (outside hunt): holding a laser, healthy and alone with a foe, open on it out to this range
+		"poke_hp":        0.6, // poke only above this HP share
 	}
 }
 

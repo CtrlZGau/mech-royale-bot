@@ -155,6 +155,14 @@ type Obs struct {
 	Zone        Zone            `json:"zone"`
 	Offer       *Offer          `json:"offer"`
 	Drops       []Drop          `json:"drops"`
+	Sounds      []Sound         `json:"sounds"`
+}
+
+type Sound struct {
+	Kind    string  `json:"kind"`
+	Bearing float64 `json:"bearing"`
+	Dist    string  `json:"dist"`
+	Age     float64 `json:"age"`
 }
 
 type Config struct {

@@ -92,6 +92,9 @@ type Bot struct {
 	lateGhost           bool // end_ghost: cautious profile until the end of a practice match
 	escTrack            [3]float64
 	mode                string
+	attnBrg, attnT      float64 // watch: bearing and time of the latest threat sound worth looking at
+	attnPri             int
+	dangerPts           []Vec3 // snipe_mem: estimated shooter spots (x, y, time)
 
 	t   float64
 	me  *Self
@@ -107,7 +110,7 @@ func NewBot(h *Hello) *Bot {
 		drones: newOmap[*Contact](), keepID: -1, keepT: -99, lostAt: -99, dangerT: -99, droneHitT: -99,
 		chaseID: -1, chaseT: -99, banned: map[int]float64{}, side: 1, postT: -99, alive0: -1, coverT: -99, holdFrom: -1,
 		droneStruck: map[int]float64{}, stallStart: -1, jiggleEnd: -1, wpathT: -99, escT: -99,
-		escOffUntil: -1, mode: "start"}
+		escOffUntil: -1, mode: "start", attnT: -99}
 	applyEnv(b.g, b.prof)
 	b.k = copyMap(b.prof["scout"])
 	dir := h.Map.Dir
@@ -250,8 +253,119 @@ func (b *Bot) struckAgo(id int) float64 {
 }
 
 // ================================================================== memory
+// noteShooter (snipe_mem): a hit from a mech we cannot see right now, or taken while not fighting, marks the
+// shooter's rough spot (from the hit bearing); waiting spots in its line of fire are avoided for 40 s.
+func (b *Bot) noteShooter(id int, brg float64) {
+	t := b.t
+	seenNow := false
+	dist := 100.0
+	if e, ok := b.enemySeen.get(id); ok && t-e.T < 0.3 {
+		seenNow = true
+		dist = math.Max(30, flat(e.Pos, b.pos))
+	}
+	if seenNow && b.mode == "fight" {
+		return
+	}
+	p := Vec3{b.pos[0] + math.Cos(brg)*dist, b.pos[1] + math.Sin(brg)*dist, t}
+	for i, q := range b.dangerPts {
+		if math.Hypot(q[0]-p[0], q[1]-p[1]) < 25 {
+			b.dangerPts[i] = p
+			p[2] = -1
+			break
+		}
+	}
+	if p[2] >= 0 {
+		b.dangerPts = append(b.dangerPts, p)
+		if len(b.dangerPts) > 6 {
+			b.dangerPts = b.dangerPts[1:]
+		}
+	}
+	// the current waiting spot is in that line of fire: choose a new one
+	if b.post != nil && b.exposedTo(b.post[0], b.post[1], b.dangerPts[len(b.dangerPts)-1]) {
+		b.post, b.postT = nil, -99
+	}
+	if b.post != nil && flat(Vec3{b.post[0], b.post[1], 0}, b.pos) < 25 {
+		b.post, b.postT = nil, -99 // hit at the post itself
+	}
+}
+
+// exposedTo: a mech standing at (x, y) can be shot from the danger point (within 160 m, clear lane).
+func (b *Bot) exposedTo(x, y float64, dp Vec3) bool {
+	if math.Hypot(x-dp[0], y-dp[1]) > 160 {
+		return false
+	}
+	L := b.L
+	from := Vec3{dp[0], dp[1], L.TreadZ(dp[0], dp[1]) + b.st("muzzle_height", 7)}
+	to := Vec3{x, y, L.TreadZ(x, y) + b.st("height", 9)*0.6}
+	return L.FireLane(from, to)
+}
+
+// watchFoe (watch): the nearest mech seen in the last 15 s within 220 m (position as last seen).
+func (b *Bot) watchFoe() *Contact {
+	var best *Contact
+	bd := 220.0
+	b.enemySeen.each(func(_ int, e *Contact) {
+		if b.t-e.T > 15 {
+			return
+		}
+		if d := flat(e.Pos, b.pos); d < bd {
+			best, bd = e, d
+		}
+	})
+	return best
+}
+
+// hearSounds (watch): keep the most urgent recent threat sound (laser charging > shots > footsteps) that does not
+// come from a mech we can already see.
+func (b *Bot) hearSounds(obs *Obs) {
+	t := b.t
+	for _, s := range obs.Sounds {
+		pri := 0
+		switch s.Kind {
+		case "laser_charge":
+			pri = 3
+		case "laser", "gun", "lightning":
+			if s.Dist != "far" {
+				pri = 2
+			}
+		case "step", "boost", "jet":
+			pri = 1
+		}
+		if pri == 0 || s.Age > 1.5 {
+			continue
+		}
+		seen := false
+		for i := range obs.Mechs {
+			m := &obs.Mechs[i]
+			if m.Kind != "mech" {
+				continue
+			}
+			if math.Abs(wrap(math.Atan2(m.Pos[1]-b.pos[1], m.Pos[0]-b.pos[0])-s.Bearing)) < 0.3 {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+		st := t - s.Age
+		if pri > b.attnPri || st-b.attnT > 1.5 || (pri == b.attnPri && st >= b.attnT) {
+			b.attnBrg, b.attnT, b.attnPri = s.Bearing, st, pri
+		}
+	}
+	if t-b.attnT > 3 {
+		b.attnPri = 0
+	}
+}
+
 func (b *Bot) remember(obs *Obs) {
 	t := b.t
+	if b.g["watch"] != 0 {
+		b.hearSounds(obs)
+	}
+	if len(b.dangerPts) > 0 && t-b.dangerPts[0][2] > 40 {
+		b.dangerPts = b.dangerPts[1:]
+	}
 	// mechs in view; a mech unseen for 20 s is forgotten, including that it hit us
 	for i := range obs.Mechs {
 		m := obs.Mechs[i]
@@ -313,6 +427,9 @@ func (b *Bot) remember(obs *Obs) {
 				}
 				// "hit us" is remembered only for a mech or drone we already know
 				id := int(*ev.By)
+				if b.g["snipe_mem"] != 0 && ev.Bearing != nil && ev.Weapon != "npc" {
+					b.noteShooter(id, *ev.Bearing)
+				}
 				if _, ok := b.enemySeen.get(id); ok {
 					b.attackers[id] = attack{t}
 				}
@@ -431,6 +548,18 @@ func (b *Bot) appraise(obs *Obs, endgame bool) (best *Contact, vis []*Contact, d
 	K := b.k
 	G := b.g
 	pickScore := 1e18
+	pokeOK := false
+	if G["poke_r"] > 0 && b.phase != "hunt" && b.me.HP > G["poke_hp"]*b.me.MaxHP {
+		if _, las := b.gear("laser"); las != nil {
+			near := 0
+			b.enemySeen.each(func(_ int, e *Contact) {
+				if e.T == t && flat(e.Pos, b.pos) < 170 {
+					near++
+				}
+			})
+			pokeOK = near <= 1
+		}
+	}
 	b.enemySeen.each(func(_ int, e *Contact) {
 		if t-e.T > 2.5 {
 			return
@@ -455,6 +584,9 @@ func (b *Bot) appraise(obs *Obs, endgame bool) (best *Contact, vis []*Contact, d
 		} else {
 			hot = d < K["fight_close"] || struck < 4 || (pointedAtUs && e.Charging && d < 120) ||
 				(hp < 350 && d < 120) || obs.Alive <= 2
+			if !hot && pokeOK && d < G["poke_r"] {
+				hot = true // laser poke: open on a lone foe at range
+			}
 		}
 		e.hot = hot
 		if hot && !e.shot && d < K["max_range"] && (unseen == nil || d < unseen.d) {
@@ -849,7 +981,13 @@ func (b *Bot) postPrice(obs *Obs, px, py float64) float64 {
 		crowd += math.Max(0, 60-math.Hypot(d.Pos[0]-px, d.Pos[1]-py)) / 60
 	}
 	edge := math.Hypot(px-nc[0], py-nc[1]) / math.Max(30, nr)
-	return 120*b.L.Airiness(px, py) + 0.25*math.Hypot(px-b.pos[0], py-b.pos[1]) + 40*crowd + 10*edge
+	shot := 0.0
+	for _, dp := range b.dangerPts {
+		if b.t-dp[2] < 40 && b.exposedTo(px, py, dp) {
+			shot += 60
+		}
+	}
+	return 120*b.L.Airiness(px, py) + 0.25*math.Hypot(px-b.pos[0], py-b.pos[1]) + 40*crowd + 10*edge + shot
 }
 
 // scoutPost: a quiet, open-but-safe waiting spot inside the next circle (40 candidates, refreshed every 12 s).
@@ -1550,6 +1688,11 @@ func (b *Bot) fire(target *Contact, drone *Contact, crate *Vec3, vis []*Contact,
 			yaw = b.droneBrg
 		case t-b.lastHitT < 2.5 && b.painDir != nil:
 			yaw = *b.painDir
+		case b.g["watch"] != 0 && b.attnPri > 0 && t-b.attnT < 2.5:
+			yaw = b.attnBrg + 0.3*math.Sin(t*2.1)
+		case b.g["watch"] == 1 && b.watchFoe() != nil:
+			w := b.watchFoe()
+			yaw = math.Atan2(w.Pos[1]-b.pos[1], w.Pos[0]-b.pos[0]) + 0.5*math.Sin(t*1.7)
 		case moving(move):
 			yaw = math.Atan2(move[1], move[0]) + 1.15*math.Sin(t*1.3)
 		default:
