@@ -43,7 +43,7 @@ SILENT_FRAC = 0.40            # move length for silent idle drift (0.4 * 11.7 = 
 
 
 class BasePolicy:
-    name = "ctrlz-v1-survive"
+    name = "ctrlz-v1.1-survive"
 
     def __init__(self, hello: mf.Hello) -> None:
         self.cfg = hello["config"]
@@ -111,6 +111,12 @@ class BasePolicy:
             target = laser_threat  # counter-shoot the charger (half speed while charging)
         if target is not None and target["kind"] == "npc" and (self.heal or known):
             target = None
+        # A drone that is shooting us is a threat in every mode: fight back or break its sight.
+        npc_attacker = self.npc_attacker(obs, t)
+        if npc_attacker is not None and (target is None or target["kind"] == "npc"):
+            target = npc_attacker if hp_frac > 0.40 else None
+            if threat is None:
+                threat = npc_attacker
 
         # ---- movement
         move: Tuple[float, float] = (0.0, 0.0)
@@ -126,6 +132,8 @@ class BasePolicy:
             boost, label, self.block_charge = me["energy"] > 10, f"dodge {laser_threat['id']}", True
         elif self.heal:
             move, allow_still, label = self.retreat_move(obs, threat, zone_vec, t)
+            if npc_attacker is not None:
+                allow_still, label = False, "heal-npc"
             boost = threat is not None and me["energy"] > 40 and math.hypot(*move) > 0.5
         elif target is not None and target["kind"] == "mech" and engage:
             move, label = self.combat_move(obs, target, zone_vec, t), f"fight {target['id']}"
@@ -147,7 +155,7 @@ class BasePolicy:
                 move, label = self.drift_move(obs, zone_vec, known, t)
 
         # ---- fix 3: never stand still while we may be seen
-        exposed = bool(known) or t - self.last_damaged_t < 5
+        exposed = bool(known) or t - self.last_damaged_t < 5 or npc_attacker is not None
         if exposed and not allow_still and math.hypot(*move) < 0.5:
             move = self.strafe_vec(obs, threat, t)
 
@@ -179,6 +187,7 @@ class BasePolicy:
         return act
 
     stuck_jump = False
+    last_npc_dmg_t = -1e9
 
     # ================================================================== memory
     def update_memory(self, obs, t):
@@ -203,11 +212,21 @@ class BasePolicy:
             if ev["type"] == "damaged":
                 if ev.get("weapon") != "zone":
                     self.last_damaged_t = t
+                if ev.get("weapon") == "npc":
+                    self.last_npc_dmg_t = t
                 if ev.get("bearing") is not None:
                     self.threat_bearing = ev["bearing"]
                     self.threat_until = t + 2.5
             elif ev["type"] in ("kill", "took", "upgrade"):
                 mf.log(f"t={t:.1f} event {ev}")
+
+    def npc_attacker(self, obs, t):
+        """Nearest visible drone if a drone damaged us in the last 3 s."""
+        if t - self.last_npc_dmg_t > 3.0:
+            return None
+        pos = obs["self"]["pos"]
+        npcs = [m for m in obs["mechs"] if m["kind"] == "npc" and dist2d(m["pos"], pos) < 100]
+        return min(npcs, key=lambda m: dist2d(m["pos"], pos)) if npcs else None
 
     def known_enemies(self, t):
         return [m for (ts, m) in self.seen.values() if t - ts <= MEMORY_S]
