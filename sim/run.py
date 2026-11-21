@@ -55,8 +55,7 @@ def _job(args):
             "alive_s": me["alive_s"], "shots": me["shots"], "hits": me["hits"], "killed_with": me["killed_with"],
             "loadout": me["loadout"], "cubes": me["cubes_max"], "bot": r["bots"][str(s)] if str(s) in r["bots"] else r["bots"].get(s),
             "wall_s": r["wall_s"], "problems": r["problems"],
-            "house_hits": {k: sum(m["hits"].get(k, 0) for m in house) for k in ("gun", "laser", "lightning", "mortar")},
-            "house_shots": {k: sum(m["shots"].get(k, 0) for m in house) for k in ("gun", "laser", "lightning", "mortar")}}
+            "hits_taken": me.get("hits_taken", {}), "rear_taken": me["effects"]["rear"]}
 
 
 def run_batch(seeds, cmd, params, jobs, opts):
@@ -92,9 +91,8 @@ def summarize(rows, label=""):
         for k, v in r["hits"].items():
             hits[k] = hits.get(k, 0) + v
     acc = {k: round(hits.get(k, 0) / v, 2) for k, v in shots.items() if v}
-    hs = {k: sum(r["house_shots"][k] for r in ok) for k in ("gun", "laser", "lightning", "mortar")}
-    hh = {k: sum(r["house_hits"][k] for r in ok) for k in ("gun", "laser", "lightning", "mortar")}
-    hacc = {k: round(hh[k] / hs[k], 2) for k in hs if hs[k]}
+    ht = agg("hits_taken")
+    rear = sum(r["rear_taken"] for r in ok) / max(1, sum(sum(r["hits_taken"].values()) for r in ok))
     late = sum((r["bot"] or {}).get("late", 0) for r in ok)
     ans = sum((r["bot"] or {}).get("answered", 0) for r in ok)
     se = st.pstdev(pts) / max(1, len(pts)) ** 0.5
@@ -103,7 +101,7 @@ def summarize(rows, label=""):
     lines.append(f"  kills/match {st.mean(r['kills'] for r in ok):.2f}   median survival {st.median(surv):.0f} s   deaths<60s {sum(1 for s in surv if s < 60)}/{len(ok)}"
                  f"   zone deaths {sum(1 for r in ok if r['killed_with'] == 'zone')}")
     lines.append(f"  dealt/match {agg('dealt')}   taken/match {taken}   laser share of taken {taken.get('laser', 0) / tt:.0%}")
-    lines.append(f"  our accuracy {acc}   house accuracy (all targets) {hacc}")
+    lines.append(f"  our accuracy {acc}   hits taken/match {ht}   rear-hit share {rear:.0%}")
     lines.append(f"  stationary {sum(r['stationary_s'] for r in ok) / max(1e-9, sum(r['alive_s'] for r in ok)):.0%}   cubes {st.mean(r['cubes'] for r in ok):.1f}"
                  f"   2nd weapon {sum(1 for r in ok if len(r['loadout']) > 1)}/{len(ok)}   unanswered obs {late}/{late + ans}")
     probs = [p for r in ok for p in r["problems"]]

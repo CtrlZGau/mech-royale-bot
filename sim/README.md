@@ -35,19 +35,21 @@ The run stops when our mech dies (place is fixed then); `python3 -m sim.server -
 damage dealt/taken by weapon, laser share of damage taken, our / house accuracy, time stationary,
 cubes, 2nd-weapon rate, unanswered observations (our bot over budget).
 
-## Calibration (sim.md §5), 48 seeds, defaults
+## Calibration (sim.md §5), defaults
 
-| version | practice | sim seeds 1-48 | sim seeds 49-96 |
-|---|---|---|---|
-| v0 (`v0-3.25`) | 3.25 | 3.06 ± 0.21 | 3.06 ± 0.22 |
-| v1.2 (`ddd5e45`) | 2.98 | 2.83 ± 0.21 | 3.04 ± 0.23 |
-| v1.1 (`6fd8444`) | 1.77 | 2.35 ± 0.19 | 2.44 ± 0.18 |
-| v1.3 (`d57e515`) | ? | 3.08 ± 0.22 | 3.12 ± 0.21 |
-| kit example bot | 1.15 | 0.58 ± 0.12 | 0.44 ± 0.10 |
+| version | practice | sim, 144 seeds (1-144) |
+|---|---|---|
+| v0 (`v0-3.25`) | 3.25 | 3.33 ± 0.14 |
+| v1.2 (`ddd5e45`) | 2.98 | 3.00 ± 0.13 |
+| v1.1 (`6fd8444`) | 1.77 | 2.08 ± 0.10 |
+| v1.3 (`d57e515`) | ? | 3.32 ± 0.15 (prediction) |
+| kit example bot | 1.15 | 0.62 ± 0.07 |
 
-Known misses: v1.1 (survive-first) is ~0.6 too high and the kit example bot ~0.6 too low.
-Treat sim differences < ~0.4 (one SE of a paired 48-seed A/B is ~0.15-0.25) as noise; use
-`--seeds 1-96` for decisions that matter.
+Per 48-seed block (1-48 / 49-96 / 97-144): v0 3.48 / 2.96 / 3.54, v1.2 3.10 / 2.92 / 2.98,
+v1.1 2.21 / 1.98 / 2.04, example 0.65 / 0.56 / 0.65. Paired A/B v0 − v1.1 over 96 seeds:
++1.12 (95 % CI +0.72..+1.54; practice +1.48). Known misses: the kit example bot is ~0.5 too low,
+v1.1 ~0.3 too high. A 48-seed block has SE ≈ 0.2 and blocks differ by up to 0.5, so use
+`--seeds 1-96` (or more) for decisions, and prefer the paired `--ab` CI.
 
 ## What is modelled
 
@@ -68,9 +70,10 @@ Treat sim differences < ~0.4 (one SE of a paired 48-seed A/B is ~0.15-0.25) as n
   end; optional schema validation of every obs and action (`kit/check/check.py` Schema).
 - **Squad** (`house.py`): difficulties 4 easy / 4 medium / 4 hard / 3 expert; weakest
   difficulty hunts first; hunters = `h0 + h_per_kill·kills + h_per_min·minutes` (all after zone
-  phase 4 or ≤ 6 alive); hunters know where we are; roamers wander in the next circle, loot,
-  break crates, fight drones, shoot us inside 25 m or when hit. Per bot: lead + AR(1) aim error
-  (σ = diff·(2.5 m + 0.07·d)), strafe with flips, close when healthy / back off < 40 % HP,
+  phase 4 or ≤ 6 alive); hunters know where we are; roamers wander (1.2 × next radius, inside
+  the current circle), loot, break crates, fight drones, shoot us inside 25 m or when hit. Per
+  bot: lead + AR(1) aim error (σ = diff·(2.5 m + 0.07·d); diff easy 2.5, medium 1.7, hard 1.1,
+  expert 0.9; vs drones/crates ×0.25), strafe with flips (easy 30 %, medium 60 % intensity), close when healthy / back off < 40 % HP,
   laser released at 0.8 s, dual fire, lightning < 42 m, mortar 35-110 m during reloads, jet over
   obstacles, combat hops, upgrades plating/armor first.
 

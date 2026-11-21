@@ -22,6 +22,7 @@ DEFAULTS = {
     "all_alive": 6,          # everyone hunts once alive mechs <= this
     "hunt_order": 1,         # 1: weakest difficulty hunts first; 0: nearest bots hunt first
     "omniscient": 1,         # hunters always know where the target is (else: last squad sighting)
+    "roam_frac": 1.2,        # roamers wander within roam_frac * next radius of the next centre
     "roam_engage": 25.0,    # non-hunters shoot the target if the squad sees it within this
     "hunt_engage": 200.0,    # hunters start shooting inside this range
     # combat
@@ -41,7 +42,9 @@ DEFAULTS = {
     "react": 1.0,            # multiplier on per-difficulty reaction time
     # per-difficulty overrides (else DIFF below): aim_easy / aim_medium / aim_hard / aim_expert,
     # firep_easy ... (chance to pull the gun trigger on a decision when aligned)
-    "aim_easy": 3.0, "aim_medium": 2.0, "aim_hard": 1.1, "aim_expert": 0.9,
+    "aim_easy": 2.5, "aim_medium": 1.7, "aim_hard": 1.1, "aim_expert": 0.9,
+    # strafe_<diff>: perpendicular move intensity in fights (1 = full-speed strafe)
+    "strafe_easy": 0.3, "strafe_medium": 0.6, "strafe_hard": 1.0, "strafe_expert": 1.0,
 }
 
 DIFF = {
@@ -209,10 +212,13 @@ class HouseBot:
         M = self.sq.M
         t = M.t
         c, r, c1, r1, ss, se, dps, ph = M.zone_state()
+        p = self.sq.p
+        # roam_frac: wander radius as a fraction of the next circle (>1 = spread into the current one)
+        rr = min(r1 * p["roam_frac"], r * 0.8) if t < ss - 25 else r1 * 0.6
         if self.goal is None or t > self.goal_until or math.hypot(self.goal[0] - self.m.x, self.goal[1] - self.m.y) < 8 \
-                or math.hypot(self.goal[0] - c1[0], self.goal[1] - c1[1]) > r1:
+                or math.hypot(self.goal[0] - c1[0], self.goal[1] - c1[1]) > max(rr, r1):
             for _ in range(20):
-                d = self.rng.random() ** 0.5 * r1 * 0.6
+                d = self.rng.random() ** 0.5 * rr
                 a = self.rng.uniform(0, 2 * math.pi)
                 x, y = c1[0] + d * math.cos(a), c1[1] + d * math.sin(a)
                 b = M.map.bounds
@@ -433,7 +439,8 @@ class HouseBot:
             radial = 0.25
         else:
             radial = 0.0
-        mx_, my_ = px * (1 - abs(radial)) ** 0.5 + ux * radial, py * (1 - abs(radial)) ** 0.5 + uy * radial
+        sf = p.get("strafe_" + self.diff, 1.0)
+        mx_, my_ = sf * px * (1 - abs(radial)) ** 0.5 + ux * radial, sf * py * (1 - abs(radial)) ** 0.5 + uy * radial
         if m.grounded and m.energy > 40 and self.rng.random() < p["hop_p"]:
             act["jump"] = True
             if self.rng.random() < 0.5:
@@ -443,8 +450,10 @@ class HouseBot:
         if zg is not None:
             gx, gy = self._move_toward(*zg)
             mx_, my_ = (mx_ + gx * 1.5), (my_ + gy * 1.5)
-        L = math.hypot(mx_, my_) or 1.0
-        return (mx_ / L, my_ / L)
+        L = math.hypot(mx_, my_)
+        if L < 1e-6:
+            return (0.0, 0.0)
+        return (mx_ / L, my_ / L) if L > 1 else (mx_, my_)
 
 
 class Squad:

@@ -121,6 +121,7 @@ class Mech:
         self.hits_made = {}
         self.shots = {}
         self.rear_taken = 0
+        self.hits_taken = {}
         self.weapons_taken = 0
         self.first_weapon_t = None
         self.cubes_max = 0
@@ -469,6 +470,7 @@ class Match:
             tgt.dmg_taken[weapon] = tgt.dmg_taken.get(weapon, 0) + amount
             if rear:
                 tgt.rear_taken += 1
+            tgt.hits_taken[weapon] = tgt.hits_taken.get(weapon, 0) + 1
             if tgt.team == "ext":
                 if weapon == "zone":
                     e = {"type": "damaged", "amount": round(amount, 1), "weapon": "zone", "bearing": None, "by": None}
@@ -1667,6 +1669,6 @@ class Match:
                         "first_weapon_t": m.first_weapon_t, "weapons_taken": m.weapons_taken,
                         "death_t": round(m.death_t, 2) if m.death_t is not None else None,
                         "killed_by": m.killed_by, "killed_with": m.killed_with, "effects": {"rear": m.rear_taken},
-                        "drops_taken": m.drops_taken, "shots": dict(m.shots), "hits": dict(m.hits_made),
+                        "drops_taken": m.drops_taken, "shots": dict(m.shots), "hits": dict(m.hits_made), "hits_taken": dict(m.hits_taken),
                         "stationary_s": round(m.stationary_t, 1), "alive_s": round(m.alive_t, 1)})
         return {"type": "result", "ticks": self.tick, "mechs": out}
