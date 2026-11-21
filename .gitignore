@@ -1,0 +1,10 @@
+# Local-only agent memory and instructions (never pushed)
+AGENTS.md
+CLAUDE.md
+.claude/
+# Upstream kit archive (the extracted kit/ is committed)
+mechfight-kit.tar.gz
+__pycache__/
+*.pyc
+/logs/
+/scratch/
