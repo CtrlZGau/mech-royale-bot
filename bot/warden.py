@@ -16,6 +16,7 @@ import time
 
 import mechfight as mf
 from mb_bot import TimedBot, dist2, unit, wrap
+from mb_world import NB
 
 PI = math.pi
 TAU = 2 * PI
@@ -26,10 +27,10 @@ SCOUT_S = 20.0
 # ---- tuning by phase
 SCOUT = dict(fight_close=60.0, max_range=215.0, hp_weight=60.0 / 1400, wounded_bonus=0.0, keep_bonus=0.0,
              pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=85.0,
-             loot_r=150.0, laser_r=240.0, farm_hp=0.7, cube_fight_r=0.0, finish_r=0.0, laser_ups=False)
+             loot_r=150.0, laser_r=240.0, farm_hp=0.7, cube_fight_r=0.0, finish_r=0.0, laser_ups=False, peek=True)
 HUNT = dict(fight_close=60.0, max_range=240.0, hp_weight=0.2, wounded_bonus=100.0, keep_bonus=120.0,
             pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=140.0,
-            loot_r=150.0, laser_r=240.0, farm_hp=0.5, cube_fight_r=70.0, finish_r=14.0, laser_ups=True)
+            loot_r=150.0, laser_r=240.0, farm_hp=0.5, cube_fight_r=70.0, finish_r=14.0, laser_ups=True, peek=False)
 
 UPG_GUNLINE = ["plating", "armor", "gun_damage", "nanites", "gun_rate", "lightning_efficiency", "lightning_range",
                "laser_damage", "servos", "laser_charge", "gun_mag", "gun_velocity", "gyros", "lightning_chain",
@@ -65,6 +66,9 @@ class WardenBot(TimedBot):
         self.post = None
         self.post_t = -99.0
         self.alive0 = None
+        self.cover_spot = None
+        self.cover_ok = False
+        self.cover_t = -99.0
         self.my_kills = 0
         mf.log("policy warden")
 
@@ -201,6 +205,7 @@ class WardenBot(TimedBot):
         K = self.k
         vis = []
         best, best_s = None, 1e18
+        unseen = None
         for e in self.enemy_seen.values():
             if t - e["t"] > 2.5:
                 continue
@@ -224,6 +229,8 @@ class WardenBot(TimedBot):
                 hot = (d < K["fight_close"] or struck < 4 or (aimed and e.get("charging") and d < 120)
                        or (hp < 350 and d < 120) or obs["alive"] <= 2)
             e["_hot"] = hot
+            if hot and not e["_shot"] and d < K["max_range"] and (unseen is None or d < unseen["_d"]):
+                unseen = e
             if not hot or not e["_shot"] or d > K["max_range"]:
                 continue
             s = d + K["hp_weight"] * hp
@@ -243,7 +250,7 @@ class WardenBot(TimedBot):
         crowd = sum(1 for e in vis if e["t"] == t and (e.get("_hot") or (e.get("_shot") and e.get("_d", 999) < 150)))
         if danger or t - self.last_hit_t < 3:
             self.danger_t = t
-        return best, vis, danger, crowd
+        return best, vis, danger, crowd, unseen
 
     # ================================================================== movement pieces
     def go(self, gx, gy):
@@ -292,15 +299,16 @@ class WardenBot(TimedBot):
                 cube = c
         best, mv = -1e18, (0.0, 0.0)
         side_blocked = False
-        for k in range(-1, 16):
+        rings = 2 if self.k.get("peek") else 1
+        for k in range(-1, 16 * rings):
             if k < 0:
                 cx, cy, dx, dy, r = x, y, 0.0, 0.0, 0.0
             else:
-                a = k * PI / 8
-                dx, dy, r = math.cos(a), math.sin(a), 6.0
+                a = (k % 16) * PI / 8
+                dx, dy, r = math.cos(a), math.sin(a), 6.0 * (1 + k // 16)
                 cx, cy = x + dx * r, y + dy * r
                 if not w.in_bounds(cx, cy, 4) or not w.walk_clear(x, y, cx, cy) or not w.cost[w.idx(cx, cy)]:
-                    if dx * sx + dy * sy > 0.9:
+                    if k < 16 and dx * sx + dy * sy > 0.9:
                         side_blocked = True
                     continue
             cz = w.height(cx, cy)
@@ -309,6 +317,14 @@ class WardenBot(TimedBot):
             sight = w.los([cx, cy, cz + mh], center)
             if sight:
                 sc += 45 * want_sight
+            if rings > 1 and 0 <= k < 16 and sight == (want_sight > 0):
+                # edge of cover: a step away flips the line of fire -> we can peek / duck
+                for q in range(0, 16, 2):
+                    qx, qy = cx + math.cos(q * PI / 8) * 7, cy + math.sin(q * PI / 8) * 7
+                    if w.in_bounds(qx, qy, 2) and w.cost[w.idx(qx, qy)] and \
+                            w.los([qx, qy, w.height(qx, qy) + mh], center) != sight:
+                        sc += 8
+                        break
             torso = [cx, cy, cz + self.me["stats"].get("height", 9) * 0.6]
             for e in vis:
                 if e is foe or dist2(e["pos"], (cx, cy)) > 170:
@@ -332,16 +348,79 @@ class WardenBot(TimedBot):
         return mv
 
     def take_cover(self, vis):
-        pts = [self.eye_of(e) for e in sorted(vis, key=lambda e: dist2(e["pos"], self.pos))[:4]
-               if dist2(e["pos"], self.pos) < 230]
-        if not pts:
+        """Walk to the nearest reachable cell hidden from the (up to 4) nearest threats, searching the
+        walkable grid outward (~100 m max, ~8 ms budget). Stay put if already hidden and zone-safe."""
+        threats = sorted([e for e in vis if dist2(e["pos"], self.pos) < 230], key=lambda e: dist2(e["pos"], self.pos))[:4]
+        if not threats:
             return None
-        spot = self.find_cover(pts, max_r=30.0)
-        if spot is None:
+        w = self.world
+        if w is None:
             return None
-        if dist2(spot, self.pos) < 1.5:
+        if self.cover_ok and self.t - self.cover_t < 0.4 and self.cover_spot is not None:
+            return self.walk_to_cover()
+        self.cover_t = self.t
+        eyes = [self.eye_of(e) for e in threats]
+        mech_h = self.me["stats"].get("height", 9)
+        z = self.obs["zone"]
+
+        def concealed(cx, cy):
+            cz = w.height(cx, cy)
+            for ey in eyes:
+                if w.los(ey, [cx, cy, cz + mech_h]) or w.los(ey, [cx, cy, cz + mech_h * 0.5]):
+                    return False
+            return True
+
+        x, y = self.pos[0], self.pos[1]
+        if concealed(x, y) and self.zone_cost(z, x, y) == 0:
+            self.cover_ok, self.cover_spot = True, (x, y)
             return (0.0, 0.0)
-        return self.go(*spot)
+        start = w.nearest_open(x, y)
+        nx, ny = w.nx, w.ny
+        depth = {start: 0}
+        frontier = [start]
+        head = 0
+        best_c, best_s = None, 1e18
+        looked = 0
+        t_end = time.perf_counter() + 0.008
+        while head < len(frontier) and looked < 350:
+            c = frontier[head]
+            head += 1
+            steps = depth[c]
+            if steps > 50 or (best_c is not None and steps * 2 > best_s + 30):
+                break
+            ci, cj = c % nx, c // nx
+            if (ci + cj) % 2 == 0 and steps > 0:
+                looked += 1
+                cx, cy = w.center(c)
+                if concealed(cx, cy):
+                    sc = steps * 2 + self.zone_cost(z, cx, cy)
+                    near = min(dist2(e["pos"], (cx, cy)) for e in threats)
+                    sc -= min(near, 80.0) * 0.25
+                    if sc < best_s:
+                        best_c, best_s = c, sc
+                if time.perf_counter() > t_end:
+                    break
+            for k, (di, dj, _) in enumerate(NB):
+                i2, j2 = ci + di, cj + dj
+                if i2 < 0 or j2 < 0 or i2 >= nx or j2 >= ny:
+                    continue
+                nb = j2 * nx + i2
+                if nb in depth or not w.can_step(c, nb):
+                    continue
+                if di and dj and (not w.cost[cj * nx + i2] or not w.cost[j2 * nx + ci]):
+                    continue  # no corner cutting
+                depth[nb] = steps + 1
+                frontier.append(nb)
+        if best_c is None:
+            self.cover_ok = False
+            return None
+        self.cover_ok, self.cover_spot = True, w.center(best_c)
+        return self.walk_to_cover()
+
+    def walk_to_cover(self):
+        if dist2(self.cover_spot, self.pos) < 1.5:
+            return (0.0, 0.0)
+        return self.go(*self.cover_spot)
 
     def sidestep(self, obs):
         """Lateral dodge from incoming bullets and from lasers charging at us. -> (dx, dy, laser?)"""
@@ -540,7 +619,8 @@ class WardenBot(TimedBot):
         _, light = self.gear("lightning")
         _, laser = self.gear("laser")
 
-        target, vis, danger, crowd = self.appraise(obs, hpf, endgame)
+        target, vis, danger, crowd, unseen = self.appraise(obs, hpf, endgame)
+        foe = target if target is not None else (unseen if K["peek"] else None)
         finishing = target is not None and target["_d"] < 120 and \
             (target.get("hp", 1400) < 200 or target.get("hp", 1400) < me["hp"] * 0.5)
 
@@ -605,14 +685,27 @@ class WardenBot(TimedBot):
             if mv is not None:
                 move, mode = mv, "hide"
                 boost = me["energy"] > 30 and (mv[0] or mv[1])
-        if mode == "idle" and target is not None:
-            hot_laser = laser is not None and laser.get("charge", 0) >= laser["stats"].get("charge", 0.75) - 0.3
-            want_sight = 1.0
-            if K["finish_r"] and target.get("hp", 1400) < 0.38 * target.get("max_hp", 1400) and hpf > 0.42 and crowd <= 2:
-                move = self.brawl_step(obs, target, vis, want_sight, range_override=K["finish_r"])
+        if mode == "idle" and foe is not None:
+            fd = foe.get("_d", dist2(foe["pos"], self.pos))
+            hot_laser = laser is not None and laser.get("charge", 0) >= laser["stats"].get("charge", 0.75) - 0.3 \
+                and fd <= laser["stats"].get("range", 280) - 5
+            armed = gun is not None and gun.get("ammo", 0) > 0 and gun.get("reload", 0) <= 0.25 \
+                and fd <= gun["stats"].get("range", 230) - 10
+            if hot_laser or (light is not None and fd <= light["stats"].get("range", 45) + 6
+                             and me["energy"] >= light["stats"].get("energy", 3) * 3):
+                armed = True
+            if not K["peek"] and (light is not None or laser is not None):
+                armed = True
+            want_sight = 1.0 if armed else -1.0
+            if K["peek"] and not hot_laser:
+                for e in vis:
+                    if e["t"] == t and e.get("charging") and self.aiming_at_me(e, 0.3):
+                        want_sight = -1.6  # a laser is lined up on us: get out of its sight
+            if K["finish_r"] and foe.get("hp", 1400) < 0.38 * foe.get("max_hp", 1400) and hpf > 0.42 and crowd <= 2:
+                move = self.brawl_step(obs, foe, vis, want_sight, range_override=K["finish_r"])
             else:
-                move = self.brawl_step(obs, target, vis, want_sight)
-            if light is not None and target["_d"] > 50 and me["energy"] > 55:
+                move = self.brawl_step(obs, foe, vis, want_sight)
+            if light is not None and fd > 50 and me["energy"] > 55 and want_sight > 0:
                 boost = True
             mode = "fight"
             if K["cube_fight_r"]:
@@ -674,6 +767,12 @@ class WardenBot(TimedBot):
 
         # ---- fire control
         aim, fire = self.fire(obs, target, shoot_drone, shoot_crate, vis, move, hpf)
+        if target is None and foe is not None:
+            for i, w in enumerate(me["weapons"][:2]):
+                if w and w["kind"] == "laser" and w["cooldown"] <= 0.05 and foe.get("_d", 999) < w["stats"].get("range", 280) \
+                        and w.get("charge", 0) < w["stats"].get("charge", 0.75) + w["stats"].get("hold_s", 2) - 0.35:
+                    fire[i] = True
+                    aim = [math.atan2(foe["pos"][1] - self.pos[1], foe["pos"][0] - self.pos[0]), 0.0]
 
         # ---- reload
         if gun is not None and gun.get("reload", 0) <= 0 and gun.get("ammo", 99) < gun["stats"].get("mag", 12):
