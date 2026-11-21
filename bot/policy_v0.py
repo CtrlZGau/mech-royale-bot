@@ -17,6 +17,24 @@ import mechfight as mf
 from util import angdiff, ballistic_pitch, clamp, dist2d, lead_time, unit, wrap, yaw_to
 from world import World
 
+import os
+
+# ---- Experiment flags (build-off-v0 ablations). One change per practice submission.
+# Override for local/live tests: MECH_FEATURES="scan,dodge" (or "none").
+FEATURES = {
+    "scan": False,        # no target: turn the torso toward recent enemy sounds (spot first)
+    "dodge": False,       # sidestep an enemy laser charging at us; reverse at 0.5 s
+    "never_still": False, # strafe instead of standing still while an enemy is (recently) around
+    "far_band": False,    # combat range band 90-150 m instead of 60-140 m
+    "backoff45": False,   # back off below 45% HP instead of 30%
+}
+_env = os.environ.get("MECH_FEATURES")
+if _env is not None:
+    FEATURES = {k: False for k in FEATURES}
+    for _k in _env.split(","):
+        if _k.strip() in FEATURES:
+            FEATURES[_k.strip()] = True
+
 # Weapon desirability for filling slot 1 (gun is always slot 0 at spawn).
 WEAPON_PREF = {"laser": 3, "lightning": 2, "mortar": 1, "gun": 0}
 
@@ -49,7 +67,16 @@ class V0Policy:
         self.last_move = (0.0, 0.0)
         self.zone_urgent_until = 0.0
         self.last_target_pos = None
-        mf.log(f"policy {self.name} slot={self.me_id} map_ok={self.world.ok}")
+        self.f = dict(FEATURES)
+        self.charge_start = {}
+        self.dodge_side = {}
+        self.sound_bearing = None
+        self.sound_until = 0.0
+        self.last_damaged_t = -1e9
+        self.last_enemy_t = -1e9
+        on = ",".join(k for k, v in self.f.items() if v) or "none"
+        self.name = f"{self.name}[{on}]"[:32]
+        mf.log(f"policy {self.name} slot={self.me_id} map_ok={self.world.ok} features={on}")
 
     # ------------------------------------------------------------------ main
     def act(self, obs: mf.Observation) -> mf.Action:
@@ -83,6 +110,7 @@ class V0Policy:
         if take is not None:
             act["take"] = take
 
+        move, dodging = self.feature_moves(obs, move, zone_urgent, t)
         move = self.unstick(obs, move, t)
         self.last_move = move
 
@@ -90,7 +118,7 @@ class V0Policy:
         act["aim"] = aim
         act["fire"] = fire
         act["move"] = [round(move[0], 3), round(move[1], 3)]
-        act["boost"] = self.want_boost(obs, zone_urgent, target)
+        act["boost"] = self.want_boost(obs, zone_urgent, target) or (dodging and me["energy"] > 10 and me["grounded"])
 
         gun = me["weapons"][0]
         if gun and gun["kind"] == "gun" and target is None and gun.get("reload", 0) == 0 \
@@ -101,11 +129,61 @@ class V0Policy:
         return act
 
     # ------------------------------------------------------------------ events
+    def feature_moves(self, obs, move, zone_urgent, t):
+        """Flagged movement changes. Returns (move, dodging)."""
+        me = obs["self"]
+        pos = me["pos"]
+        vis = [m for m in obs["mechs"] if m["kind"] == "mech"]
+        if vis:
+            self.last_enemy_t = t
+        for m in vis:
+            if m.get("charging"):
+                self.charge_start.setdefault(m["id"], t)
+            else:
+                self.charge_start.pop(m["id"], None)
+                self.dodge_side.pop(m["id"], None)
+        if self.f["dodge"] and not (zone_urgent and not me["in_zone"]):
+            for m in vis:
+                t0 = self.charge_start.get(m["id"])
+                if t0 is None or t - t0 > 1.6:
+                    continue
+                d = max(dist2d(m["pos"], pos), 1.0)
+                bearing = math.atan2(pos[1] - m["pos"][1], pos[0] - m["pos"][0])
+                if abs(angdiff(m["aim"][0], bearing)) < math.atan2(4.0, d) + 0.04:
+                    to_me = unit(pos[0] - m["pos"][0], pos[1] - m["pos"][1])
+                    side = self.dodge_side.setdefault(m["id"], self.rng.choice((-1, 1)))
+                    if t - t0 >= 0.5:
+                        side = -side
+                    mf.draw.text("dodge")
+                    return (-to_me[1] * side, to_me[0] * side), True
+        if self.f["never_still"] and math.hypot(*move) < 0.3 and (vis or t - self.last_damaged_t < 5):
+            ref = min(vis, key=lambda m: dist2d(m["pos"], pos))["pos"] if vis else None
+            if t > self.strafe_until:
+                self.strafe_dir = -self.strafe_dir if self.rng.random() < 0.7 else self.strafe_dir
+                self.strafe_until = t + self.rng.uniform(0.8, 1.8)
+            if ref is not None:
+                to_t = unit(ref[0] - pos[0], ref[1] - pos[1])
+            else:
+                to_t = (math.cos(me["aim"][0]), math.sin(me["aim"][0]))
+            return (-to_t[1] * self.strafe_dir, to_t[0] * self.strafe_dir), False
+        return move, False
+
     def read_events(self, obs: mf.Observation, t: float) -> None:
+        if self.f["scan"]:
+            best = None
+            for snd in obs.get("sounds", []):
+                if snd["kind"] in ("gun", "laser", "laser_charge", "lightning", "step", "boost", "jet", "reload", "mortar") \
+                        and snd["dist"] in ("near", "mid") and snd.get("age", 0) < 1.0:
+                    rank = (snd["dist"] == "near", -snd.get("age", 0))
+                    if best is None or rank > best[0]:
+                        best = (rank, snd["bearing"])
+            if best is not None:
+                self.sound_bearing, self.sound_until = best[1], t + 2.0
         for ev in obs.get("events", []):
             if ev["type"] == "damaged" and ev.get("bearing") is not None:
                 self.threat_bearing = ev["bearing"]
                 self.threat_until = t + 2.5
+                self.last_damaged_t = t
             elif ev["type"] in ("kill", "took", "take_failed", "upgrade"):
                 mf.log(f"t={t:.1f} event {ev}")
 
@@ -178,12 +256,12 @@ class V0Policy:
             self.strafe_until = t + self.rng.uniform(0.8, 2.0)
         perp = (-to_t[1] * self.strafe_dir, to_t[0] * self.strafe_dir)
         kinds = {w["kind"] for w in me["weapons"] if w}
-        lo, hi = (20, 38) if "lightning" in kinds else (60, 140)
+        lo, hi = (20, 38) if "lightning" in kinds else ((90, 150) if self.f["far_band"] else (60, 140))
         if target["kind"] == "npc":
             lo, hi = 25, 50
         radial = 0.0
         hp_frac = me["hp"] / me["max_hp"]
-        if hp_frac < 0.3:
+        if hp_frac < (0.45 if self.f["backoff45"] else 0.3):
             radial = -1.0  # back off when hurt
         elif d > hi:
             radial = 0.8
@@ -271,6 +349,8 @@ class V0Policy:
                 return [math.atan2(lp[1] - pos[1], lp[0] - pos[0]), 0.0], fire
             if self.threat_bearing is not None and t < self.threat_until:
                 return [self.threat_bearing, 0.0], fire
+            if self.f["scan"] and self.sound_bearing is not None and t < self.sound_until:
+                return [self.sound_bearing, 0.0], fire
             if math.hypot(*move) > 0.1:
                 base = math.atan2(move[1], move[0])
                 return [wrap(base + 0.6 * math.sin(t * 1.3)), 0.0], fire
