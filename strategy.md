@@ -1,7 +1,6 @@
 # Warden: the full strategy and state machine
 
-Warden is our best policy: **5.31 on the practice board** (commits `9b8c28c` and `092be56`; the earlier
-mechbot baseline was 4.13). Code: `bot/warden.py` (class `WardenBot`), selected by `POLICY = "wd"` in
+Warden is our main policy. Code: `bot/warden.py` (class `WardenBot`), selected by `POLICY = "wd"` in
 `bot/main.py`. It runs on our Python map layer (`bot/mb_world.py`: 2 m height/walkability grid, line of
 sight, A* planner) and reuses a few base helpers from `bot/mb_bot.py` (path following, stuck recovery,
 mortar-shell dodge, attacker memory).
@@ -36,7 +35,6 @@ before we die. Warden therefore:
 squad practice this only happens if a house bot dies to the zone or a drone; in free-for-all rooms it
 triggers within ~13–27 s (measured on 18 live recordings).
 
-> Status: the Guard profile is the newest addition and has not yet had its own practice score.
 
 ### Profile parameters
 
@@ -340,16 +338,3 @@ The first offered choice in this order wins.
 - Path following: steer to the farthest of the next 8 waypoints that is walkable in a straight line
   within 30 m. If no path yet: the nearest walkable direction to the goal.
 
----
-
-## 14. Results
-
-| Version | Practice |
-|---|---|
-| mechbot baseline | 4.10 / 4.13 |
-| **Warden** (`9b8c28c`) | **5.31** |
-| Warden + Scout peeking + grid cover search (`092be56`) | 5.31 |
-| Warden + Guard profile | pending |
-
-Local simulator (practice mode, 192 paired seeds): Warden 5.66 vs mechbot 3.38; 5.6 kills and 4.3 cubes
-per match.

@@ -11,7 +11,7 @@ house bots that act as the practice squad (shared vision, no friendly fire, hunt
 python3 sim/run.py --seeds 1-48 -- python3 -u bot/main.py
 
 # paired A/B on identical seeds (spawns, loot, zone) with a bootstrap 95% CI of the difference
-git archive v0-3.25 bot | tar -x -C /tmp/v0          # any old version, without touching the repo
+git archive v0 bot | tar -x -C /tmp/v0          # any old version, without touching the repo
 python3 sim/run.py --seeds 1-48 --ab "python3 -u /tmp/v0/bot/main.py" --ab "python3 -u bot/main.py"
 
 # one match, with replay (logs/sim/replay-<seed>.jsonl) + obs/action trace + schema validation
@@ -35,20 +35,10 @@ The run stops when our mech dies (place is fixed then); `python3 -m sim.server -
 damage dealt/taken by weapon, laser share of damage taken, our / house accuracy, time stationary,
 cubes, 2nd-weapon rate, unanswered observations (our bot over budget).
 
-## Calibration (sim.md §5), defaults
+## Calibration (sim.md §5)
 
-| version | practice | sim, 144 seeds (1-144) |
-|---|---|---|
-| v0 (`v0-3.25`) | 3.25 | 3.33 ± 0.14 |
-| v1.2 (`ddd5e45`) | 2.98 | 3.00 ± 0.13 |
-| v1.1 (`6fd8444`) | 1.77 | 2.08 ± 0.10 |
-| v1.3 (`d57e515`) | ? | 3.32 ± 0.15 (prediction) |
-| kit example bot | 1.15 | 0.62 ± 0.07 |
-
-Per 48-seed block (1-48 / 49-96 / 97-144): v0 3.48 / 2.96 / 3.54, v1.2 3.10 / 2.92 / 2.98,
-v1.1 2.21 / 1.98 / 2.04, example 0.65 / 0.56 / 0.65. Paired A/B v0 − v1.1 over 96 seeds:
-+1.12 (95 % CI +0.72..+1.54; practice +1.48). Known misses: the kit example bot is ~0.5 too low,
-v1.1 ~0.3 too high. A 48-seed block has SE ≈ 0.2 and blocks differ by up to 0.5, so use
+`python3 sim/calibrate.py --versions DIR` compares each calibration version's sim score with its practice
+result from the local, untracked `logs/practice_scores.json`. A 48-seed block is noisy; use
 `--seeds 1-96` (or more) for decisions, and prefer the paired `--ab` CI.
 
 ## What is modelled

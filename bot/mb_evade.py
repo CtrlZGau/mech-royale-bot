@@ -1,4 +1,4 @@
-"""Our stealth on top of mechbot 4.10 (mb_bot.py @120f1ff, unchanged): the V2 "evade" strategy.
+"""Our stealth on top of mechbot (mb_bot.py @120f1ff, unchanged): the V2 "evade" strategy.
 
 Differences from mechbot's act():
   - Fight ONLY when engaged: a mech damaged us recently, a laser is charging at us, a mech is
@@ -40,7 +40,7 @@ class EvadeBot(TimedBot):
         self.evade_goal_pt = None
         self.evade_score = -1e18
         self.evade_t = -99.0
-        mf.log("policy ctrlz-mb-evade (mechbot 4.10 + V2 evade)")
+        mf.log("policy ctrlz-mb-evade (mechbot + V2 evade)")
 
     # ------------------------------------------------------------------ memory
     def update_memory(self, obs):

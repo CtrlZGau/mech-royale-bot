@@ -17,20 +17,18 @@ vision, never fight each other, and hunt us weakest-first ("one early, more as y
 all of them late"). House bots mostly die only to us (or the zone), so **practice points ≈ house bots
 dead before we die**. Score = mean(16 − place).
 
-Known practice results (the calibration targets, §5):
+Calibration versions (§5); their practice results are kept locally in `logs/practice_scores.json`
+(not tracked):
 
-| version | git ref | how to run | practice score |
-|---|---|---|---|
-| v0 | tag `v0-3.25` (`bot/policy.py` at that tag, class `BasePolicy`) | `git worktree add /tmp/v0 v0-3.25` then `python3 -u /tmp/v0/bot/main.py` | **3.25** |
-| v1.1 | `6fd8444` | worktree, `bot/main.py` | **1.77** |
-| v1.2 | `ddd5e45` | worktree, `bot/main.py` | **2.98** |
-| v1.3 | `d57e515` | worktree, `bot/main.py` | pending (ask in AGENTS.md §9) |
+| version | git ref | how to run |
+|---|---|---|
+| v0 | tag `v0` (`bot/policy.py` at that tag, class `BasePolicy`) | `git worktree add /tmp/v0 v0` then `python3 -u /tmp/v0/bot/main.py` |
+| v1.1 | `6fd8444` | worktree, `bot/main.py` |
+| v1.2 | `ddd5e45` | worktree, `bot/main.py` |
+| v1.3 | `d57e515` | worktree, `bot/main.py` |
 
-Leaderboard: #1 ≈ 5.96, top-32 cutoff ≈ 5.2.
-
-Live free-for-all results (play server) do **not** predict practice: v1 scored 11.0 live but 1.77 in
-practice. Live rooms are also real-time over the internet (our actions arrive late); scored matches
-are lockstep. The sim must be **lockstep**.
+Live free-for-all results (play server) do **not** predict practice. Live rooms are also real-time over
+the internet (our actions arrive late); scored matches are lockstep. The sim must be **lockstep**.
 
 ## 2. Interface: run our real bot unchanged
 
@@ -140,10 +138,9 @@ Behaviour measured from 37 real replays of the play-server house bots (`logs/opp
 ## 5. Calibration (definition of done)
 
 Run each bot version in §1 on the same 48 seeds. The sim is **trusted** when:
-1. Ranking matches practice: v0 > v1.2 > v1.1 (and v1.3 vs v0 once its practice score arrives).
-2. Absolute scores within ~±0.8 of practice (v0 3.25, v1.1 1.77, v1.2 2.98).
-3. Mechanism sanity: the kit example bot (`kit/python/example_bot.py`, practice baseline **1.15**)
-   scores ~1.15 ± 0.6.
+1. Ranking matches the practice ranking of the versions in §1.
+2. Absolute scores are close to the practice results in `logs/practice_scores.json`.
+3. Mechanism sanity: the kit example bot (`kit/python/example_bot.py`) lands near its practice result.
 Tune only §4 squad parameters (hunter schedule, aim noise, aggression) to hit these, and record
 every calibration run (params → scores) in AGENTS.md §7.
 

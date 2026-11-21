@@ -1,6 +1,6 @@
 [
  {
-  "name": "mechbot-4.10 (120f1ff)",
+  "name": "mechbot (120f1ff)",
   "cmd": [
    "python3",
    "-u",
@@ -57,15 +57,15 @@
   }
  },
  {
-  "name": "v0 (3.25)",
+  "name": "v0",
   "cmd": [
    "python3",
    "-u",
-   "/tmp/claude-1000/-home-gb-mech-game/d62d4b17-f398-4693-ad15-3381ad4e0730/scratchpad/versions/v0-3.25/bot/main.py"
+   "/tmp/claude-1000/-home-gb-mech-game/d62d4b17-f398-4693-ad15-3381ad4e0730/scratchpad/versions/v0/bot/main.py"
   ]
  },
  {
-  "name": "v1.1 (1.77)",
+  "name": "v1.1",
   "cmd": [
    "python3",
    "-u",
@@ -73,7 +73,7 @@
   ]
  },
  {
-  "name": "v1.2 (2.98)",
+  "name": "v1.2",
   "cmd": [
    "python3",
    "-u",
@@ -156,7 +156,7 @@
   }
  },
  {
-  "name": "kit example (1.15)",
+  "name": "kit example",
   "cmd": [
    "python3",
    "-u",

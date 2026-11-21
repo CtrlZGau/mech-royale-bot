@@ -1,4 +1,4 @@
-"""v3: experiments on top of mechbot 4.10 (mb_bot.py @120f1ff, unchanged). One flag per idea.
+"""v3: experiments on top of mechbot (mb_bot.py @120f1ff, unchanged). One flag per idea.
 
 Flags (env MB_FLAGS="anchor,aggro3" or the DEFAULT_FLAGS set below for the submitted image):
   anchor  : with nothing to do (mechbot "wander"), and from zone phase 2 instead of far farming,
@@ -41,7 +41,7 @@ from mb_bot import TimedBot, dist2, unit, wrap
 
 PI = math.pi
 TAU = 2 * PI
-DEFAULT_FLAGS = {"cubemax"}  # practice experiment: user cube strategy alone on mechbot (focus hurt twice in practice)
+DEFAULT_FLAGS = {"cubemax"}
 _env = os.environ.get("MB_FLAGS")
 FLAGS = set(x.strip() for x in _env.split(",") if x.strip()) if _env is not None else set(DEFAULT_FLAGS)
 

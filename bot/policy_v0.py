@@ -48,7 +48,7 @@ UPGRADE_PREF = [
 
 
 class V0Policy:
-    """v0 decision logic (practice 3.25) + two bug fixes: laser release, sticky zone urgency."""
+    """v0 decision logic + two bug fixes: laser release, sticky zone urgency."""
     name = "ctrlz-v1.3-v0fix"
 
     def __init__(self, hello: mf.Hello) -> None:

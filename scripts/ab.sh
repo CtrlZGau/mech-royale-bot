@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Paired A/B of mechbot variants vs plain mechbot 4.10 in the local sim.
+# Paired A/B of mechbot variants vs plain mechbot in the local sim.
 # Usage: scripts/ab.sh SEEDS SPEC [SPEC ...]   SPEC = "flag,flag" or "flag,flag|name=val,name=val"
 #   e.g. scripts/ab.sh 1-144 focus "focus,npcsafe|hp_w=0.12,stick_s=8"
 set -u
