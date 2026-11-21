@@ -91,6 +91,7 @@ Global switches (`g.*`):
 | `fight_boost` | 0 | if > 0: in a fight, boost while energy is above this (not while charging a laser; with lightning only above 60) |
 | `dodge_boost` | 0 | if > 0: boost while sidestepping when energy is above this |
 | `early_gunned_s` | 0 | if > 0: until this match time, back off from a mech carrying a laser while we have none (beyond 30 m, at any HP) |
+| `end_ghost` | 0 | if > 0: in a practice match (Hunt phase), once the next circle's radius is at most this, switch to the cautious profile for the rest of the match; the small circle then no longer counts as the endgame (only ≤ 3 mechs alive does) |
 
 ---
 

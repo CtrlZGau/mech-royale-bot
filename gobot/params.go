@@ -46,6 +46,7 @@ func globals() map[string]float64 {
 		"fight_boost":    0,   // >0: in a fight, boost while energy is above this (not while charging a laser; lightning needs > 60)
 		"dodge_boost":    0,   // >0: boost while sidestepping when energy is above this
 		"early_gunned_s": 0,   // >0: until this match time, back off from a laser carrier while we have no laser (any HP)
+		"end_ghost":      0,   // >0: in a practice match, once the next circle is this small, play the cautious profile to the end
 	}
 }
 

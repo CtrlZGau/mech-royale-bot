@@ -89,6 +89,7 @@ type Bot struct {
 	jetting             bool
 	escT, escOffUntil   float64
 	escTrackOn          bool
+	lateGhost           bool // end_ghost: cautious profile until the end of a practice match
 	escTrack            [3]float64
 	mode                string
 
@@ -348,6 +349,13 @@ func (b *Bot) remember(obs *Obs) {
 		want = "guard"
 	} else if t > b.g["scout_s"] {
 		want = "hunt"
+	}
+	// end_ghost (switch): late in a practice match stop hunting the squad and outlast it in the zone collapse
+	if eg := b.g["end_ghost"]; want == "hunt" && !b.lateGhost && eg > 0 && obs.Zone.NextRadius <= eg {
+		b.lateGhost = true
+	}
+	if b.lateGhost {
+		want = "guard"
 	}
 	if want != b.phase {
 		b.phase = want
@@ -1146,7 +1154,7 @@ func (b *Bot) Act(obs *Obs) Action {
 	K := b.k
 	hpf := me.HP / math.Max(1, me.MaxHP)
 	z := &obs.Zone
-	endgame := z.NextRadius <= 70 || obs.Alive <= 3
+	endgame := (z.NextRadius <= 70 && !b.lateGhost) || obs.Alive <= 3
 
 	if obs.Offer != nil && len(obs.Offer.Choices) > 0 {
 		order := upgGunLine
