@@ -34,7 +34,13 @@ def main():
     recs = sorted(glob.glob(os.path.join(ROOT, "logs", "live-*.jsonl")))
     streams = []
     for p in recs:
-        msgs = [json.loads(l)["msg"] for l in open(p) if '"dir": "in"' in l]
+        msgs = []
+        for l in open(p):
+            if '"dir": "in"' in l:
+                try:
+                    msgs.append(json.loads(l)["msg"])
+                except ValueError:
+                    pass  # recording still being written
         hello = next((m for m in msgs if m.get("type") == "hello"), None)
         obs = [m for m in msgs if m.get("type") == "obs"]
         if hello and obs:

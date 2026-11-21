@@ -21,7 +21,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def load_match(rec_path, replay_path):
     ins, outs = [], {}
     for line in open(rec_path):
-        d = json.loads(line)
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue  # truncated line
         m = d["msg"]
         if d["dir"] == "in":
             ins.append(m)
@@ -30,7 +33,10 @@ def load_match(rec_path, replay_path):
     names, kinds = {}, {}
     if replay_path and os.path.exists(replay_path):
         for line in open(replay_path):
-            d = json.loads(line)
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
             if d.get("type") == "header":
                 for mm in d.get("mechs", []):
                     names[mm["id"]] = mm.get("name")
