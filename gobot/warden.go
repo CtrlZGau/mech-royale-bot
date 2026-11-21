@@ -876,17 +876,8 @@ func (b *Bot) scoutPost(obs *Obs) *Vec2 {
 func (b *Bot) leavePocket(me *Self) (mv Vec2, boost, jump, ok bool) {
 	L := b.L
 	x, y, z := b.pos[0], b.pos[1], b.pos[2]
-	if b.g["esc_guard"] != 0 {
-		if b.t < b.escOffUntil {
-			return
-		}
-		if !b.escTrackOn || math.Hypot(x-b.escTrack[1], y-b.escTrack[2]) > 1.5 {
-			b.escTrackOn, b.escTrack = true, [3]float64{b.t, x, y}
-		} else if b.escLand != nil && b.t-b.escTrack[0] > 2.0 {
-			b.escOffUntil = b.t + 5
-			b.escLand, b.escFlying, b.escTrackOn = nil, false, false
-			return
-		}
+	if b.g["esc_guard"] != 0 && b.t < b.escOffUntil {
+		return
 	}
 	if me.Grounded {
 		if z-L.FloorZ(x, y) > 3 && L.hindered[L.FineIdx(x, y)] {
@@ -908,8 +899,20 @@ func (b *Bot) leavePocket(me *Self) (mv Vec2, boost, jump, ok bool) {
 			b.escFrom, b.escLand = &from, &land
 		}
 		if math.Hypot(b.escFrom[0]-x, b.escFrom[1]-y) > 2.5 {
+			// optional: a walk to the takeoff that makes no progress for 2 s is given up for 5 s
+			// (waiting for energy at the takeoff and flying are not counted)
+			if b.g["esc_guard"] != 0 {
+				if !b.escTrackOn || math.Hypot(x-b.escTrack[1], y-b.escTrack[2]) > 1.5 {
+					b.escTrackOn, b.escTrack = true, [3]float64{b.t, x, y}
+				} else if b.t-b.escTrack[0] > 2.0 {
+					b.escOffUntil = b.t + 5
+					b.escLand, b.escFlying, b.escTrackOn = nil, false, false
+					return
+				}
+			}
 			return b.goTo(b.escFrom[0], b.escFrom[1]), false, false, true
 		}
+		b.escTrackOn = false
 		if me.Energy < math.Min(70, me.MaxEnergy*0.7) {
 			return Vec2{}, false, false, true
 		}
@@ -1602,7 +1605,7 @@ func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec
 				if target.carries("mortar") {
 					dmg *= 1 + w.st("cookoff", 0.6)
 				}
-				if dmg*0.8 >= target.hp() && math.Abs(wrap(hy-ay)) < tolY*0.9 && math.Abs(hpitch-ap) < tolP {
+				if dmg*b.g["lethal_k"] >= target.hp() && math.Abs(wrap(hy-ay)) < tolY*0.9 && math.Abs(hpitch-ap) < tolP {
 					aim = Vec2{hy, hpitch}
 					fire[i] = false
 					continue

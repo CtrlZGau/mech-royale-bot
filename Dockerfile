@@ -8,4 +8,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM scratch
 COPY --from=build /out/warden /bot/warden
+# Practice test: give up a pocket escape whose walk to the takeoff stops making progress (remove for defaults).
+ENV WD_P="g.esc_guard=1"
 ENTRYPOINT ["/bot/warden"]
