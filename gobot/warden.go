@@ -90,6 +90,8 @@ type Bot struct {
 	escT, escOffUntil   float64
 	escTrackOn          bool
 	recoverUntil        float64 // opening recovery: back off until this time
+	fleeUntil           float64 // odds flight: treat as overrun until this time
+	openingOn           bool    // opening profile active
 	escTrack            [3]float64
 	mode                string
 
@@ -354,6 +356,17 @@ func (b *Bot) remember(obs *Obs) {
 		b.phase = want
 		b.k = copyMap(b.prof[want])
 	}
+	// opening (switch): in Scout, while nobody but our victims has died, seek lasers far and loot wide
+	if b.g["opening"] != 0 {
+		on := b.phase == "scout" && b.alive0-obs.Alive-b.myKills <= 0
+		if on != b.openingOn {
+			b.openingOn = on
+			b.k = copyMap(b.prof[b.phase])
+			if on {
+				b.k["laser_first"], b.k["laser_r"], b.k["loot_r"] = 1, 240, 150
+			}
+		}
+	}
 }
 
 // ================================================================== zone timing
@@ -420,6 +433,11 @@ func (b *Bot) zoneCost(z *Zone, x, y float64) float64 {
 
 // ================================================================== threat picture
 func (b *Bot) appraise(obs *Obs, endgame bool) (best *Contact, vis []*Contact, danger bool, crowd int, unseen *Contact) {
+	best, vis, danger, crowd, unseen, _ = b.appraiseAll(obs, endgame, 1)
+	return
+}
+
+func (b *Bot) appraiseAll(obs *Obs, endgame bool, hpf float64) (best *Contact, vis []*Contact, danger bool, crowd int, unseen *Contact, wary *Contact) {
 	t := b.t
 	K := b.k
 	G := b.g
@@ -448,6 +466,26 @@ func (b *Bot) appraise(obs *Obs, endgame bool) (best *Contact, vis []*Contact, d
 		} else {
 			hot = d < K["fight_close"] || struck < 4 || (pointedAtUs && e.Charging && d < 120) ||
 				(hp < 350 && d < 120) || obs.Alive <= 2
+			facing := 0.0
+			if e.Aim != nil {
+				facing = math.Abs(wrap(e.Aim[0] - math.Atan2(b.pos[1]-e.Pos[1], b.pos[0]-e.Pos[0])))
+			}
+			if v := G["vulture"]; v > 0 && hpf > 0.75 && hp < v*mhp && facing > 0.6 && d < 165 {
+				hot = true
+			}
+			if a := G["alert"]; a > 0 && e.shot && d < a && (closing > 3 || pointedAtUs) {
+				hot = true
+			}
+			if sh := G["shy"]; sh > 0 && e.shot && d < sh && d >= K["fight_close"] && (closing > 3 || pointedAtUs) && !hot &&
+				(wary == nil || d < wary.d) {
+				wary = e
+			}
+			if am := G["ambush"]; am > 0 && hpf > 0.85 && facing > 1.75 && d < am {
+				hot = true
+			}
+			if od := G["odds"]; od > 0 && !hot && e.shot && hpf > 0.5 && d < b.weaponReach() && b.winChance(e, true) >= od {
+				hot = true
+			}
 		}
 		e.hot = hot
 		if hot && !e.shot && d < K["max_range"] && (unseen == nil || d < unseen.d) {
@@ -488,6 +526,72 @@ func (b *Bot) appraise(obs *Obs, endgame bool) (best *Contact, vis []*Contact, d
 		b.dangerT = t
 	}
 	return
+}
+
+// winChance: a logistic estimate that we win a duel with m (HP ratio, cubes, weapon count, who is busy with
+// someone else; at the start of an exchange also distance and whether it faces away).
+func (b *Bot) winChance(m *Contact, opening bool) float64 {
+	mine := 0
+	for _, w := range b.me.Weapons {
+		if w != nil {
+			mine++
+		}
+	}
+	theirs := len(m.Weapons)
+	if theirs == 0 {
+		theirs = 1
+	}
+	capped := func(c float64) float64 { return math.Min(c, 10) }
+	weBusy, theyBusy := 0.0, 0.0
+	b.enemySeen.each(func(_ int, u *Contact) {
+		if u.ID == m.ID || b.t-u.T > 2.5 {
+			return
+		}
+		if b.t-fgetA(b.attackers, u.ID) < 6 {
+			weBusy = 1
+		}
+		if m.Aim != nil {
+			toU := math.Atan2(u.Pos[1]-m.Pos[1], u.Pos[0]-m.Pos[0])
+			if math.Abs(wrap(m.Aim[0]-toU)) < 0.2 && math.Hypot(u.Pos[0]-m.Pos[0], u.Pos[1]-m.Pos[1]) < 160 {
+				theyBusy = 1
+			}
+		}
+	})
+	z := 1.5093*math.Log(math.Max(b.me.HP, 1)/math.Max(m.hp(), 1)) + 0.7049*(capped(b.me.Cubes)-capped(m.Cubes))/10 +
+		0.9583*float64(mine-theirs) - 0.5592*(weBusy-theyBusy)
+	if opening {
+		z += 0.0562 + 0.7475*math.Min(m.d, 200)/100
+		if m.Aim != nil && math.Abs(wrap(m.Aim[0]-math.Atan2(b.pos[1]-m.Pos[1], b.pos[0]-m.Pos[0]))) > 1.75 {
+			z += 0.8235
+		}
+	}
+	return 1 / (1 + math.Exp(-z))
+}
+
+// weaponReach: the farthest distance at which our loadout fights well.
+func (b *Bot) weaponReach() float64 {
+	r := 0.0
+	for _, w := range b.me.Weapons {
+		if w == nil {
+			continue
+		}
+		switch w.Kind {
+		case "gun":
+			r = math.Max(r, math.Min(w.st("range", 230)-10, 130))
+		case "laser":
+			r = math.Max(r, w.st("range", 280)-5)
+		case "lightning":
+			r = math.Max(r, w.st("range", 45))
+		}
+	}
+	return r
+}
+
+func fgetA(m map[int]attack, k int) float64 {
+	if a, ok := m[k]; ok {
+		return a.t
+	}
+	return -1e9
 }
 
 // ================================================================== movement pieces
@@ -1189,9 +1293,12 @@ func (b *Bot) Act(obs *Obs) Action {
 	_, light := b.gear("lightning")
 	_, laser := b.gear("laser")
 
-	target, vis, danger, crowd, unseen := b.appraise(obs, endgame)
+	target, vis, danger, crowd, unseen, wary := b.appraiseAll(obs, endgame, hpf)
 	foe := target
 	if foe == nil && K["peek"] != 0 {
+		foe = unseen
+	}
+	if pu := b.g["pursue"]; foe == nil && pu > 0 && unseen != nil && unseen.hp() < pu*unseen.maxHP() {
 		foe = unseen
 	}
 	closingKill := target != nil && target.d < 120 && (target.hp() < 200 || target.hp() < me.HP*0.5)
@@ -1199,6 +1306,12 @@ func (b *Bot) Act(obs *Obs) Action {
 	// ---- when to back off
 	underGunned := target != nil && target.carries("laser") && laser == nil && target.d > 55 && hpf < 0.8
 	overrun := crowd >= 3 || (crowd == 2 && hpf < 0.65) || underGunned
+	if of := b.g["odds_flee"]; of > 0 && target != nil && !closingKill && b.winChance(target, false) < of {
+		b.fleeUntil = t + 5
+	}
+	if t < b.fleeUntil && !closingKill {
+		overrun = true
+	}
 	if !b.backing && ((hpf < K["pull_hp"] && t-b.dangerT < 2) || overrun) {
 		b.backing = true
 		b.coverT = -1 // look for cover afresh
@@ -1308,6 +1421,36 @@ func (b *Bot) Act(obs *Obs) Action {
 			boost = me.Energy > 30 && moving(mv)
 		}
 	}
+	exposed := false
+	for _, e := range vis {
+		if e.T == t && e.shot && e.d < 230 {
+			exposed = true
+		}
+	}
+	for _, e := range vis {
+		if e.T == t && e.d < 45 {
+			exposed = false
+		}
+	}
+	if eh := b.g["early_hide"]; mode == "idle" && t < eh && exposed && !closingKill {
+		if mv, ok := b.takeCover(vis); ok {
+			move, mode = mv, "early-hide"
+			boost = me.Energy > 20 && moving(mv)
+		}
+	}
+	if mode == "idle" && foe == nil && wary != nil && !endgame {
+		if mv, ok := b.takeCover(vis); ok {
+			move, mode = mv, "shy"
+			boost = me.Energy > 40 && moving(mv)
+		}
+	}
+	if mode == "idle" && b.g["evade"] != 0 && foe != nil && !endgame && !closingKill && foe.d > K["fight_close"]*1.2 &&
+		foe.hp() > 0.45*foe.maxHP() {
+		if mv, ok := b.takeCover(vis); ok {
+			move, mode = mv, "evade"
+			boost = me.Energy > 30 && moving(mv)
+		}
+	}
 	if mode == "idle" && foe != nil {
 		fd := foe.d
 		hotLaser := laser != nil && laser.Charge >= laser.st("charge", 0.75)-0.3 && fd <= laser.st("range", 280)-5
@@ -1338,6 +1481,9 @@ func (b *Bot) Act(obs *Obs) Action {
 			boost = true
 		}
 		mode = "fight"
+		if fb := b.g["fight_boost"]; fb > 0 && me.Energy > fb && (laser == nil || laser.Charge <= 0) && (light == nil || me.Energy > 60) {
+			boost = true
+		}
 		if K["cube_fight_r"] != 0 {
 			rr := K["cube_fight_r"]
 			if hpf <= 0.5 {
@@ -1389,7 +1535,7 @@ func (b *Bot) Act(obs *Obs) Action {
 		} else if b.phase == "scout" || b.phase == "guard" {
 			if post := b.scoutPost(obs); post != nil && math.Hypot(post[0]-b.pos[0], post[1]-b.pos[1]) > 3 {
 				move, mode = b.goTo(post[0], post[1]), "post"
-				if !danger && t-b.lastHitT > 6 {
+				if !danger && t-b.lastHitT > 6 && !b.openingOn {
 					q := math.Min(1, 4.6/b.st("walk_speed", 11.7)) // silent walk
 					move = Vec2{move[0] * q, move[1] * q}
 				}
@@ -1408,7 +1554,13 @@ func (b *Bot) Act(obs *Obs) Action {
 			if las && me.Energy > 25 {
 				boost = true
 			}
+			if db := b.g["dodge_boost"]; db > 0 && me.Energy > db {
+				boost = true
+			}
 		}
+	}
+	if tb := b.g["threat_boost"]; tb > 0 && me.Energy > tb && (foe != nil || t-b.lastHitT < 2.5) && (light == nil || me.Energy > 60) {
+		boost = true
 	}
 	jump := hopNow
 	if mode == "escape" {

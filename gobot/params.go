@@ -44,6 +44,20 @@ func globals() map[string]float64 {
 		"open_recover":  0,   // 1 = in the first 60 s, back off for 5.5 s after losing an exchange
 		"laser_v":       150, // loot value of a sought laser pickup (minimum)
 		"crate_nolaser": 1,   // crate loot value multiplier while we hold no laser (crates can drop weapons)
+		// free-for-all options (all off): see strategy.md
+		"vulture":      0, // >0: in Scout/Guard, also fight a mech below this HP fraction that is not facing us (we > 75 % HP, < 165 m)
+		"alert":        0, // >0: in Scout/Guard, fight a shootable mech closing or aiming at us within this range
+		"shy":          0, // >0: in Scout/Guard, hide from a shootable mech closing or aiming at us between fight range and this
+		"ambush":       0, // >0: in Scout/Guard, fight a mech facing away from us within this range (we > 85 % HP)
+		"odds":         0, // >0: in Scout/Guard, fight a shootable mech in reach when the win estimate is at least this
+		"odds_flee":    0, // >0: back off for 5 s when the win estimate against the target drops below this
+		"early_hide":   0, // >0: until this match time, take cover while any mech has a line of fire on us
+		"evade":        0, // 1: take cover from a healthy foe that is still beyond 1.2 x fight range
+		"pursue":       0, // >0: with no target, go after a hidden engaged mech below this HP fraction
+		"opening":      0, // 1: in Scout, while no one else has died, seek lasers from 240 m and loot from 150 m
+		"fight_boost":  0, // >0: in a fight, boost while energy is above this (not while charging a laser; lightning needs > 60)
+		"dodge_boost":  0, // >0: boost while sidestepping when energy is above this
+		"threat_boost": 0, // >0: boost while energy is above this whenever a foe is present or we were hurt in the last 2.5 s
 	}
 }
 
