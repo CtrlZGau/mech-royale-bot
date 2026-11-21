@@ -4,7 +4,7 @@ import collections, gzip, json, os, sys, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "bot"))
 import mechfight as mf
-from policy import BasePolicy
+from policy_v0 import V0Policy as BasePolicy
 
 msgs = [json.loads(l) for l in gzip.open(os.path.join(ROOT, "kit/check/stream.jsonl.gz"), "rt")]
 hello = msgs[0]; hello["map"]["dir"] = os.path.join(ROOT, "kit/arena")
