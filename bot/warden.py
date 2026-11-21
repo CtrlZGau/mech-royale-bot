@@ -28,15 +28,17 @@ SCOUT_S = 20.0
 # ---- tuning by phase
 SCOUT = dict(fight_close=60.0, max_range=215.0, hp_weight=60.0 / 1400, wounded_bonus=0.0, keep_bonus=0.0,
              pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=85.0,
-             loot_r=150.0, laser_r=240.0, farm_hp=0.7, cube_fight_r=0.0, finish_r=0.0, laser_ups=False, peek=True)
+             loot_r=150.0, laser_r=240.0, farm_hp=0.7, cube_fight_r=0.0, finish_r=0.0, laser_ups=False, peek=True,
+             lethal=True)
 # Guard: the cautious default once the match is clearly not a pure squad hunt (someone else died)
 GUARD = dict(fight_close=60.0, max_range=215.0, hp_weight=60.0 / 1400, wounded_bonus=0.0, keep_bonus=0.0,
              pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=85.0,
              loot_r=90.0, laser_r=90.0, farm_hp=0.7, cube_fight_r=0.0, finish_r=0.0, laser_ups=False, peek=True,
-             crate_until=150.0, laser_first=False)
+             crate_until=150.0, laser_first=False, lethal=False)
 HUNT = dict(fight_close=60.0, max_range=240.0, hp_weight=0.2, wounded_bonus=100.0, keep_bonus=120.0,
             pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=140.0,
-            loot_r=150.0, laser_r=240.0, farm_hp=0.5, cube_fight_r=70.0, finish_r=14.0, laser_ups=True, peek=False, speed_ups=False)
+            loot_r=150.0, laser_r=240.0, farm_hp=0.5, cube_fight_r=70.0, finish_r=14.0, laser_ups=True, peek=False, speed_ups=False,
+            lethal=True)
 
 UPG_GUNLINE = ["plating", "armor", "gun_damage", "nanites", "gun_rate", "lightning_efficiency", "lightning_range",
                "laser_damage", "servos", "laser_charge", "gun_mag", "gun_velocity", "gyros", "lightning_chain",
@@ -58,7 +60,139 @@ OTHERS_DEAD_TICKS = 5  # decisions in a row with a death we did not cause -> Gua
 #   WD_P="g.scout_s=10,g.guard=0,hunt.finish_r=20,scout.loot_r=200"  (prefix g. = global, else a phase)
 GLOBAL = dict(scout_s=SCOUT_S, guard=0, others_dead_ticks=OTHERS_DEAD_TICKS, back_s=1.5, lose_two_hp=0.55,
               lose_three_hp=0.8, lose_low_hp=0.35, closing_v=3.0, closing_r=180.0, weak_frac=0.4, weak_r=160.0,
-              aimed_r=190.0, struck_s=6.0, lethal=1, sidestep=1, drops=1, drone_farm=1, crate_farm=1, cube_v=75.0)
+              aimed_r=190.0, struck_s=6.0, lethal=1, sidestep=1, drops=1, drone_farm=1, crate_farm=1, cube_v=75.0,
+              parity=0)
+# parity=1 switches the engine-level behaviours to the reference implementation's rules: their stuck
+# recovery, mortar-shell dodge, path following, escape from isolated pockets, wall-clearance penalty,
+# skyline_reach-based waiting spot (40 candidates), main-area loot filter, latency-free line-of-fire check.
+
+
+class FloorMap:
+    """Walkable-area helpers on the 2 m map grid (used when parity=1):
+    blocked  - cells a mech should not stand on: impassable, touching a wall (within ~the mech radius), or a roof
+    comp     - connected walkable areas; `main` is the largest one
+    clear    - metres to the nearest blocked cell (4-neighbour, capped at 20)
+    skyline_reach - mean free length of 24 horizontal rays at standing height + 7 m (0..1)"""
+
+    def __init__(self, w):
+        self.w = w
+        nx, ny = w.nx, w.ny
+        n = nx * ny
+        cost, H, G, prism = w.cost, w.H, w.G, w.prism
+        blocked = bytearray(n)
+        for c in range(n):
+            if cost[c] == 0 or cost[c] >= 4 or (prism[c] and H[c] - G[c] > 1.5):
+                blocked[c] = 1
+        self.nogo = blocked
+        comp = [-1] * n
+        sizes = []
+        nb8 = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
+        for s0 in range(n):
+            if blocked[s0] or comp[s0] >= 0:
+                continue
+            lab = len(sizes)
+            comp[s0] = lab
+            q = [s0]
+            k = 0
+            while k < len(q):
+                c = q[k]
+                k += 1
+                ci, cj = c % nx, c // nx
+                for di, dj in nb8:
+                    i2, j2 = ci + di, cj + dj
+                    if i2 < 0 or j2 < 0 or i2 >= nx or j2 >= ny:
+                        continue
+                    nb = j2 * nx + i2
+                    if blocked[nb] or comp[nb] >= 0 or not w.can_step(c, nb):
+                        continue
+                    if di and dj and (blocked[cj * nx + i2] or blocked[j2 * nx + ci]):
+                        continue
+                    comp[nb] = lab
+                    q.append(nb)
+            sizes.append(len(q))
+        self.region = comp
+        self.core = max(range(len(sizes)), key=lambda i: sizes[i]) if sizes else -1
+        clear = [1e9] * n
+        q = []
+        for c in range(n):
+            if blocked[c]:
+                clear[c] = 0.0
+                q.append(c)
+        k = 0
+        while k < len(q):
+            c = q[k]
+            k += 1
+            dnext = clear[c] + 2.0
+            if dnext > 20:
+                continue
+            ci, cj = c % nx, c // nx
+            for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                i2, j2 = ci + di, cj + dj
+                if 0 <= i2 < nx and 0 <= j2 < ny:
+                    nb = j2 * nx + i2
+                    if clear[nb] > dnext:
+                        clear[nb] = dnext
+                        q.append(nb)
+        self.wall_gap = [min(v, 20.0) for v in clear]
+
+    def closest_open_cell(self, x, y, rmax=6):
+        w = self.w
+        i0, j0 = w.cell(x, y)
+        nx, ny = w.nx, w.ny
+        c0 = j0 * nx + i0
+        if not self.nogo[c0]:
+            return c0
+        for r in range(1, rmax + 1):
+            for dj in range(-r, r + 1):
+                for di in ((-r, r) if abs(dj) != r else range(-r, r + 1)):
+                    i, j = i0 + di, j0 + dj
+                    if 0 <= i < nx and 0 <= j < ny and not self.nogo[j * nx + i]:
+                        return j * nx + i
+        return -1
+
+    def standable_core(self, x, y):
+        c = self.w.idx(x, y)
+        return not self.nogo[c] and self.region[c] == self.core
+
+    def near_core(self, x, y):
+        c = self.closest_open_cell(x, y)
+        return c >= 0 and self.region[c] == self.core
+
+    def closest_core_cell(self, x, y, rmax=60):
+        w = self.w
+        i0, j0 = w.cell(x, y)
+        nx, ny = w.nx, w.ny
+        for r in range(1, rmax + 1):
+            best = None
+            for dj in range(-r, r + 1):
+                for di in ((-r, r) if abs(dj) != r else range(-r, r + 1)):
+                    i, j = i0 + di, j0 + dj
+                    if 0 <= i < nx and 0 <= j < ny:
+                        c = j * nx + i
+                        if not self.nogo[c] and self.region[c] == self.core:
+                            dd = di * di + dj * dj
+                            if best is None or dd < best[0]:
+                                best = (dd, c)
+            if best:
+                return w.center(best[1])
+        return None
+
+    def skyline_reach(self, x, y):
+        w = self.w
+        H = w.H
+        z = w.height(x, y) + 7
+        total = 0.0
+        for k in range(24):
+            a = k * PI / 12
+            ca, sa = math.cos(a), math.sin(a)
+            d = 2.5
+            while d < 200:
+                px, py = x + ca * d, y + sa * d
+                if not w.in_bounds(px, py, 0) or H[w.idx(px, py)] > z:
+                    break
+                d += 2.5
+            total += d
+        return total / (24 * 200)
 
 
 class WardenBot(TimedBot):
@@ -100,7 +234,21 @@ class WardenBot(TimedBot):
         self.cover_ok = False
         self.cover_t = -99.0
         self.my_kills = 0
-        mf.log("policy warden")
+        self.hurt_bearing = None          # bearing of the last damage that had an attacker
+        self.drone_struck = {}            # drone id -> last time it hit us
+        self.stuck_since = -1.0
+        self.unstuck_until = -1.0
+        self.unstuck_dir = (0.0, 0.0)
+        self.wpath, self.wpath_goal, self.wpath_t, self.wpath_i = None, None, -99.0, 0
+        self.esc_land, self.esc_flying, self.esc_t = None, False, -99.0
+        self.post_job = None
+        self.par = bool(self.g["parity"])
+        self.grid = None
+        if self.par and self.world is not None:
+            t0 = time.perf_counter()
+            self.grid = FloorMap(self.world)
+            mf.log(f"parity grid built in {time.perf_counter() - t0:.2f}s")
+        mf.log("policy warden" + (" (parity)" if self.par else ""))
 
     # ================================================================== helpers
     def scale(self, cubes):
@@ -122,7 +270,7 @@ class WardenBot(TimedBot):
     def clear_shot(self, m):
         if self.world is None:
             return True
-        mz = self.muzzle()
+        mz = self.muzzle() if not self.par else [self.pos[0], self.pos[1], self.pos[2] + self.me["stats"].get("muzzle_height", 7)]
         if self.world.los(mz, self.body_center(m)):
             return True
         if m.get("kind") == "mech":
@@ -173,10 +321,18 @@ class WardenBot(TimedBot):
         for iid in [i for i, d in self.drones.items() if t - d["t"] > 120]:
             del self.drones[iid]
         for ev in obs.get("events", []):
-            if ev["type"] == "damaged" and ev.get("weapon") == "npc" and ev.get("bearing") is not None:
-                self.drone_hit_t, self.drone_bearing = t, ev["bearing"]
+            if ev["type"] == "damaged":
+                if ev.get("weapon") == "npc" and ev.get("bearing") is not None:
+                    self.drone_hit_t, self.drone_bearing = t, ev["bearing"]
+                if ev.get("by") is not None:
+                    if ev.get("bearing") is not None:
+                        self.hurt_bearing = ev["bearing"]
+                    if ev["by"] >= 100:
+                        self.drone_struck[ev["by"]] = t
             elif ev["type"] == "kill":
                 self.my_kills += 1
+                if self.par:
+                    self.enemy_seen.pop(ev.get("target"), None)
         if self.alive0 is None:
             self.alive0 = obs["alive"]
         if self.alive0 - obs["alive"] - self.my_kills > 0:
@@ -292,7 +448,45 @@ class WardenBot(TimedBot):
 
     # ================================================================== movement pieces
     def go(self, gx, gy):
-        return self.navigate((gx, gy))
+        if not self.par or self.world is None:
+            return self.navigate((gx, gy))
+        w = self.world
+        x, y = self.pos[0], self.pos[1]
+        d = math.hypot(gx - x, gy - y)
+        if d < 0.8:
+            return (0.0, 0.0)
+        if d < 45 and w.walk_clear(x, y, gx, gy):
+            return unit(gx - x, gy - y)
+        pl = self.planner
+        if self.wpath is None or dist2(self.wpath_goal, (gx, gy)) > 5 or self.t - self.wpath_t > 2.5:
+            if not pl.active:
+                pl.start(x, y, gx, gy)
+                self.wpath_goal, self.wpath_t = (gx, gy), self.t
+        if pl.active:
+            budget = max(0.002, 0.015 - (time.perf_counter() - self._t0))
+            if pl.step(budget):
+                self.wpath, self.wpath_i = list(pl.path), 0
+        path = self.wpath
+        if not path:
+            return unit(gx - x, gy - y)
+        bi, bd = self.wpath_i, 1e18
+        for i in range(self.wpath_i, min(len(path), self.wpath_i + 10)):
+            dd = math.hypot(path[i][0] - x, path[i][1] - y)
+            if dd < bd:
+                bi, bd = i, dd
+        self.wpath_i = bi
+        if bd > 12:
+            self.wpath = None
+            return unit(gx - x, gy - y)
+        for i in range(min(bi + 14, len(path) - 1), bi, -1):
+            px, py = path[i]
+            if w.walk_clear(x, y, px, py):
+                if i == len(path) - 1 and math.hypot(px - gx, py - gy) < 4 and w.walk_clear(x, y, gx, gy):
+                    return unit(gx - x, gy - y)
+                return unit(px - x, py - y)
+        if bi + 1 < len(path):
+            return unit(path[bi + 1][0] - x, path[bi + 1][1] - y)
+        return unit(gx - x, gy - y)
 
     def keep_range(self, m):
         _, light = self.gear("lightning")
@@ -317,7 +511,13 @@ class WardenBot(TimedBot):
         stay out of other enemies' sight, stay in the zone, drift toward cubes."""
         w = self.world
         x, y = self.pos[0], self.pos[1]
-        rp = range_override if range_override else self.keep_range(foe)
+        if range_override and self.par:
+            keep = (self.k["pref_gun"], self.k["pref_light"], self.k["pref_laser"])
+            self.k["pref_gun"] = self.k["pref_light"] = self.k["pref_laser"] = range_override
+            rp = self.keep_range(foe)
+            self.k["pref_gun"], self.k["pref_light"], self.k["pref_laser"] = keep
+        else:
+            rp = range_override if range_override else self.keep_range(foe)
         bx, by = foe["pos"][0] - x, foe["pos"][1] - y
         bd = math.hypot(bx, by) + 1e-9
         ux, uy = bx / bd, by / bd
@@ -345,7 +545,8 @@ class WardenBot(TimedBot):
                 a = (k % 16) * PI / 8
                 dx, dy, r = math.cos(a), math.sin(a), 6.0 * (1 + k // 16)
                 cx, cy = x + dx * r, y + dy * r
-                if not w.in_bounds(cx, cy, 4) or not w.walk_clear(x, y, cx, cy) or not w.cost[w.idx(cx, cy)]:
+                if not w.in_bounds(cx, cy, 4) or not w.walk_clear(x, y, cx, cy) or not w.cost[w.idx(cx, cy)] or \
+                        (self.grid is not None and self.grid.nogo[w.idx(cx, cy)]):
                     if k < 16 and dx * sx + dy * sy > 0.9:
                         side_blocked = True
                     continue
@@ -372,6 +573,10 @@ class WardenBot(TimedBot):
             sc -= self.zone_cost(obs["zone"], cx, cy)
             if cube is not None:
                 sc += 1.5 * (dist2(cube["pos"], self.pos) - math.hypot(cube["pos"][0] - cx, cube["pos"][1] - cy))
+            if self.grid is not None:
+                cl = self.grid.wall_gap[w.idx(cx, cy)]
+                if cl < 4:
+                    sc -= (4 - cl) * 2.5
             if want_sight > 0:
                 sc += 9 * (dx * sx + dy * sy)
             if k < 0:
@@ -386,7 +591,7 @@ class WardenBot(TimedBot):
         return mv
 
     def take_cover(self, vis):
-        """Walk to the nearest reachable cell hidden from the (up to 4) nearest threats, searching the
+        """Walk to the nearest standable_core cell hidden from the (up to 4) nearest threats, searching the
         walkable grid outward (~100 m max, ~8 ms budget). Stay put if already hidden and zone-safe."""
         threats = sorted([e for e in vis if dist2(e["pos"], self.pos) < 230], key=lambda e: dist2(e["pos"], self.pos))[:4]
         if not threats:
@@ -444,6 +649,8 @@ class WardenBot(TimedBot):
                     continue
                 nb = j2 * nx + i2
                 if nb in depth or not w.can_step(c, nb):
+                    continue
+                if self.grid is not None and self.grid.nogo[nb]:
                     continue
                 if di and dj and (not w.cost[cj * nx + i2] or not w.cost[j2 * nx + ci]):
                     continue  # no corner cutting
@@ -516,6 +723,48 @@ class WardenBot(TimedBot):
         return seen / n if n else 1.0
 
     def scout_post(self, obs):
+        if self.par and self.grid is not None:
+            return self.scout_post_matched(obs)
+        return self.scout_post_basic(obs)
+
+    def post_price(self, obs, px, py):
+        z = obs["zone"]
+        nc, nr = z["next_center"], z["next_radius"]
+        crowd = sum(max(0.0, 80 - dist2(e["pos"], (px, py))) / 80 for e in self.enemy_seen.values()
+                    if self.t - e["t"] < 20)
+        crowd += sum(max(0.0, 60 - dist2(d["pos"], (px, py))) / 60 for d in obs.get("drops", []))
+        edge = math.hypot(px - nc[0], py - nc[1]) / max(30.0, nr)
+        return 120 * self.grid.skyline_reach(px, py) + 0.25 * dist2((px, py), self.pos) + 40 * crowd + 10 * edge
+
+    def scout_post_matched(self, obs):
+        z = obs["zone"]
+        nc, nr = z["next_center"], z["next_radius"]
+        out = self.post is None or dist2(self.post, nc) > nr * 0.8
+        if self.post_job is None and (out or self.t - self.post_t > 12):
+            self.post_t = self.t
+            self.post_job = {"left": 40, "best": None, "bc": 1e18, "out": out}
+        job = self.post_job
+        if job is not None:
+            for _ in range(8):  # 40 candidates over 5 decisions (Python is slower than the reference)
+                if job["left"] <= 0:
+                    break
+                job["left"] -= 1
+                a = self.rng.uniform(0, TAU)
+                r = math.sqrt(self.rng.random()) * nr * 0.7
+                px, py = nc[0] + r * math.cos(a), nc[1] + r * math.sin(a)
+                if not self.world.in_bounds(px, py, 1) or not self.grid.standable_core(px, py):
+                    continue
+                c = self.post_price(obs, px, py)
+                if c < job["bc"]:
+                    job["best"], job["bc"] = (px, py), c
+            if job["left"] <= 0:
+                self.post_job = None
+                if job["best"] is not None and (job["out"] or self.post is None or
+                                                job["bc"] < self.post_price(obs, *self.post) - 15):
+                    self.post = job["best"]
+        return self.post
+
+    def scout_post_basic(self, obs):
         """A quiet, low-exposure waiting spot inside the next circle (refreshed every 12 s)."""
         z = obs["zone"]
         nc, nr = z["next_center"], z["next_radius"]
@@ -544,6 +793,81 @@ class WardenBot(TimedBot):
             if best is not None and (stale or self.post is None or bc < cost(*self.post) - 15):
                 self.post = best
         return self.post
+
+    # ================================================================== parity: escape, shell dodge
+    def leave_pocket(self, me):
+        """Stranded in a walkable pocket cut off from the main area: wait for energy, then jump and jet
+        to the nearest main-area cell, boosting while below the surfaces ahead. -> (move, boost, jump) or None"""
+        g = self.grid
+        if g is None:
+            return None
+        x, y, z = self.pos
+        w = self.world
+        if me["grounded"]:
+            if z - w.ground(x, y) > 3:
+                self.esc_land, self.esc_flying = None, False
+                return None
+            if g.near_core(x, y):
+                self.esc_land, self.esc_flying = None, False
+                return None
+            self.esc_flying = False
+            if self.esc_land is None or self.t - self.esc_t > 6:
+                self.esc_land, self.esc_t = g.closest_core_cell(x, y), self.t
+                if self.esc_land is None:
+                    return None
+            if me["energy"] < min(70.0, me["max_energy"] * 0.7):
+                return (0.0, 0.0), False, False
+            self.esc_flying = True
+            jump = True
+        elif not self.esc_flying or self.esc_land is None:
+            return None
+        else:
+            jump = False
+        lx, ly = self.esc_land
+        d = math.hypot(lx - x, ly - y)
+        if d < 1.5:
+            return (0.0, 0.0), False, jump
+        mv = ((lx - x) / d, (ly - y) / d)
+        need = -1e9
+        tt = 0.0
+        while tt <= min(d, 30.0):
+            need = max(need, w.height(x + mv[0] * tt, y + mv[1] * tt))
+            tt += 1.0
+        return mv, (z < need + 2.5 and me["energy"] > 1), jump
+
+    def outrun_shell(self, obs):
+        me = self.me
+        mort = self.cfg["weapons"].get("mortar", {})
+        g = mort.get("gravity", 22) or 22
+        rad = mort.get("splash_radius", 7) + me["stats"].get("radius", 2.5) + 2
+        w = self.world
+        for p in obs.get("projectiles", []):
+            if p["kind"] != "mortar":
+                continue
+            px, py, pz = p["pos"]
+            vz = p["vel"][2]
+            tt = 0.0
+            while tt < 4:
+                px += p["vel"][0] * 0.05
+                py += p["vel"][1] * 0.05
+                pz += vz * 0.05
+                vz -= g * 0.05
+                if w is not None and (not w.in_bounds(px, py, 0) or pz <= w.height(px, py)):
+                    d = math.hypot(px - self.pos[0], py - self.pos[1])
+                    if d < rad and tt < 2.5:
+                        dx, dy = self.pos[0] - px, self.pos[1] - py
+                        if d < 0.5:
+                            dx, dy = -p["vel"][1], p["vel"][0]
+                            d = math.hypot(dx, dy) or 1.0
+                        dx, dy = dx / d, dy / d
+                        for rot in (0.0, 0.7, -0.7, 1.4, -1.4):
+                            c, s_ = math.cos(rot), math.sin(rot)
+                            ex, ey = dx * c - dy * s_, dx * s_ + dy * c
+                            if w.walk_clear(self.pos[0], self.pos[1], self.pos[0] + ex * 6, self.pos[1] + ey * 6):
+                                return (ex, ey)
+                    break
+                tt += 0.05
+        return None
 
     # ================================================================== loot
     def wants_gear(self, kind):
@@ -589,7 +913,11 @@ class WardenBot(TimedBot):
                 return
             if t + d * 1.4 / walk + 5 > self.must_leave_by(z, pos[0], pos[1], 6):
                 return
-            if self.world is not None and pos[2] - self.world.height(pos[0], pos[1]) > 3.2:
+            if self.world is not None:
+                base = self.world.ground(pos[0], pos[1]) if self.par else self.world.height(pos[0], pos[1])
+                if pos[2] - base > 3.2:
+                    return
+            if self.grid is not None and not self.grid.near_core(pos[0], pos[1]):
                 return
             u = value / (d + 18)
             if self.chase == (kind, iid):
@@ -598,12 +926,17 @@ class WardenBot(TimedBot):
                 best, best_u = (kind, iid, pos), u
 
         for iid, p in self.items["pickup"].items():
-            if self.t - self.failed_take.get(iid, -99) < 4 or not self.wants_gear(p.get("kind")):
+            if (not self.par and self.t - self.failed_take.get(iid, -99) < 4) or not self.wants_gear(p.get("kind")):
                 continue
-            rad = K["laser_r"] if p.get("kind") == "laser" else K["loot_r"]
+            if self.par:
+                seek = p.get("kind") == "laser" and K["laser_r"] > K["loot_r"]
+                rad = K["laser_r"] if seek else K["loot_r"]
+            else:
+                seek = p.get("kind") == "laser" and K.get("laser_first", True)
+                rad = K["laser_r"] if p.get("kind") == "laser" else K["loot_r"]
             if dist2(p["pos"], self.pos) < rad:
                 v = 130.0 if self.me["weapons"][1] is None else 60.0
-                if p.get("kind") == "laser" and K.get("laser_first", True):
+                if seek:
                     v = max(v, 150.0)
                 offer("pickup", iid, p["pos"], v)
         capped = self.me["cubes"] >= self.cfg["cubes"].get("stat_cap", 10)
@@ -699,8 +1032,22 @@ class WardenBot(TimedBot):
         mode = "idle"
         shoot_drone = None
         shoot_crate = None
-        shell = self.dodge(obs)
-        if shell is not None:
+        esc_jump = False
+        shell = None
+        if self.par:
+            esc = self.leave_pocket(me)
+            if esc is not None:
+                move, boost, esc_jump = esc
+                mode = "escape"
+            elif t < self.unstuck_until:
+                move, mode = self.unstuck_dir, "unstuck"
+            else:
+                shell = self.outrun_shell(obs)
+        else:
+            shell = self.dodge(obs)
+        if mode != "idle":
+            pass
+        elif shell is not None:
             move, boost, mode = shell, me["energy"] > 15, "shell"
         elif zone_now and zd > 2:
             move, mode = self.go(gx, gy), "zone"
@@ -718,9 +1065,9 @@ class WardenBot(TimedBot):
                     s = 1.0 if (t % 3) < 1.5 else -1.0
                     move = (-math.sin(self.drone_bearing) * s, math.cos(self.drone_bearing) * s)
         elif self.phase in ("scout", "guard") and target is None and t - self.last_hit_t < 2.5 and not endgame \
-                and self.threat_bearing is not None:
-            ghost = {"pos": [self.pos[0] + math.cos(self.threat_bearing[1]) * 80,
-                             self.pos[1] + math.sin(self.threat_bearing[1]) * 80, self.pos[2]], "cubes": 0}
+                and (self.hurt_bearing if self.par else (self.threat_bearing[1] if self.threat_bearing else None)) is not None:
+            hb = self.hurt_bearing if self.par else self.threat_bearing[1]
+            ghost = {"pos": [self.pos[0] + math.cos(hb) * 80, self.pos[1] + math.sin(hb) * 80, self.pos[2]], "cubes": 0}
             mv = self.take_cover([ghost] + vis)
             if mv is not None:
                 move, mode = mv, "hide"
@@ -796,14 +1143,32 @@ class WardenBot(TimedBot):
                         move = (move[0] * q, move[1] * q)
 
         # ---- dodges and stuck recovery
-        dx, dy, las = self.sidestep(obs) if self.g["sidestep"] else (0.0, 0.0, False)
+        dx, dy, las = self.sidestep(obs) if self.g["sidestep"] and mode not in ("unstuck", "escape") \
+            else (0.0, 0.0, False)
         if dx or dy:
             mx, my = move[0] * 0.4 + dx * 0.9, move[1] * 0.4 + dy * 0.9
             L = math.hypot(mx, my)
             move = (mx / L, my / L) if L > 1 else (mx, my)
             if las and me["energy"] > 25:
                 boost = True
-        move, sj, sb = self.unstick(move)
+        if self.par:
+            sj, sb = esc_jump, False
+            if mode == "escape":
+                self.stuck_since = -1.0
+            elif (move[0] or move[1]) and math.hypot(me["vel"][0], me["vel"][1]) < 1.2 and me["grounded"]:
+                if self.stuck_since < 0:
+                    self.stuck_since = t
+                elif t - self.stuck_since > 0.7:
+                    a = self.rng.uniform(0, TAU)
+                    self.unstuck_dir = (math.cos(a), math.sin(a))
+                    self.unstuck_until = t + 0.5
+                    self.stuck_since = -1.0
+                    self.wpath = None
+                    sj = True
+            else:
+                self.stuck_since = -1.0
+        else:
+            move, sj, sb = self.unstick(move)
 
         # ---- fire control
         aim, fire = self.fire(obs, target, shoot_drone, shoot_crate, vis, move, hpf)
@@ -812,7 +1177,8 @@ class WardenBot(TimedBot):
                 if w and w["kind"] == "laser" and w["cooldown"] <= 0.05 and foe.get("_d", 999) < w["stats"].get("range", 280) \
                         and w.get("charge", 0) < w["stats"].get("charge", 0.75) + w["stats"].get("hold_s", 2) - 0.35:
                     fire[i] = True
-                    aim = [math.atan2(foe["pos"][1] - self.pos[1], foe["pos"][0] - self.pos[0]), 0.0]
+                    if not self.par:
+                        aim = [math.atan2(foe["pos"][1] - self.pos[1], foe["pos"][0] - self.pos[0]), 0.0]
 
         # ---- reload
         if gun is not None and gun.get("reload", 0) <= 0 and gun.get("ammo", 99) < gun["stats"].get("mag", 12):
@@ -835,7 +1201,7 @@ class WardenBot(TimedBot):
             break
 
         act.update(move=[round(move[0], 3), round(move[1], 3)], aim=[round(aim[0], 4), round(aim[1], 4)],
-                   fire=fire, boost=bool((boost or sb) and (move[0] or move[1]) and me["energy"] > 8),
+                   fire=fire, boost=bool((boost or sb) and (move[0] or move[1]) and (self.par or me["energy"] > 8)),
                    jump=bool(sj))
         self.last_move = move
         self.mode = mode
@@ -869,6 +1235,8 @@ class WardenBot(TimedBot):
                 if t - dr["t"] > 0.5 or dist2(dr["pos"], self.pos) > 150 or not self.clear_shot(dr):
                     continue
                 off = abs(wrap(math.atan2(dr["pos"][1] - self.pos[1], dr["pos"][0] - self.pos[0]) - self.drone_bearing))
+                if self.par and t - self.drone_struck.get(dr["id"], -99) < 3:
+                    off = 0.0
                 if off < off_best:
                     best, off_best = dr, off
             if best is not None:
@@ -896,7 +1264,7 @@ class WardenBot(TimedBot):
         if tp is None:
             # keep a charged laser from wasting itself; watch the most relevant direction
             for i, w in enumerate(me["weapons"]):
-                if w and w["kind"] == "laser" and w.get("charge", 0) > 0:
+                if w and w["kind"] == "laser" and w.get("charge", 0) > 0 and not self.par:
                     fire[i] = w["charge"] < w["stats"].get("charge", 0.75) + w["stats"].get("hold_s", 2) - 0.35
             watch = None
             for e in vis:
@@ -907,7 +1275,9 @@ class WardenBot(TimedBot):
                 yaw = math.atan2(watch["pos"][1] - self.pos[1], watch["pos"][0] - self.pos[0])
             elif t - self.drone_hit_t < 2.5:
                 yaw = self.drone_bearing
-            elif t - self.last_hit_t < 2.5 and self.threat_bearing is not None:
+            elif t - self.last_hit_t < 2.5 and self.par and self.hurt_bearing is not None:
+                yaw = self.hurt_bearing
+            elif t - self.last_hit_t < 2.5 and not self.par and self.threat_bearing is not None:
                 yaw = self.threat_bearing[1]
             elif move[0] or move[1]:
                 yaw = math.atan2(move[1], move[0]) + 1.15 * math.sin(t * 1.3)
@@ -953,7 +1323,7 @@ class WardenBot(TimedBot):
                 full = ws.get("charge", 0.75)
                 ch = w.get("charge", 0)
                 # release early if a partial charge already kills
-                if self.g["lethal"] and ch >= ws.get("min_charge", 0.15) and ch < full - 0.051:
+                if self.g["lethal"] and self.k.get("lethal", True) and ch >= ws.get("min_charge", 0.15) and ch < full - 0.051:
                     dmg = ws.get("damage", 315) * (ws.get("min_frac", 0.35) + (1 - ws.get("min_frac", 0.35)) * ch / full)
                     dmg *= 1 + self.cfg["cubes"].get("damage_per_cube", 0.04) * min(me["cubes"], self.cfg["cubes"].get("stat_cap", 10))
                     if "mortar" in (target.get("weapons") or []):
