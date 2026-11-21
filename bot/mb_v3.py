@@ -36,7 +36,7 @@ from mb_bot import TimedBot, dist2, unit, wrap
 
 PI = math.pi
 TAU = 2 * PI
-DEFAULT_FLAGS = set()  # practice: focus+npcsafe scored 3.65 (< mechbot 4.13); sim drones ~3x too dangerous
+DEFAULT_FLAGS = {"focus", "loot2"}  # practice experiment: sim +0.21 (CI -0.08..+0.49), FFA tied best
 _env = os.environ.get("MB_FLAGS")
 FLAGS = set(x.strip() for x in _env.split(",") if x.strip()) if _env is not None else set(DEFAULT_FLAGS)
 
