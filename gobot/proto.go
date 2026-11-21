@@ -269,7 +269,7 @@ func main() {
 				break drain
 			}
 		}
-		var latest []byte
+		var newest []byte
 		for _, raw := range batch {
 			var head struct {
 				Type string `json:"type"`
@@ -296,21 +296,21 @@ func main() {
 				}
 				send(map[string]string{"type": "ready", "name": "warden"})
 			case "obs":
-				latest = raw
+				newest = raw
 			case "end":
 				return
 			}
 		}
-		if latest == nil {
+		if newest == nil {
 			continue
 		}
 		var obs Obs
-		if err := json.Unmarshal(latest, &obs); err != nil {
+		if err := json.Unmarshal(newest, &obs); err != nil {
 			logf("obs parse: %v", err)
 			var tk struct {
 				Tick json.RawMessage `json:"tick"`
 			}
-			if json.Unmarshal(latest, &tk) == nil && tk.Tick != nil {
+			if json.Unmarshal(newest, &tk) == nil && tk.Tick != nil {
 				send(halt(tk.Tick, nil)) // answer the tick, standing still
 			}
 			continue

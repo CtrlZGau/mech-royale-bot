@@ -87,6 +87,8 @@ Global switches (`g.*`):
 | `esc_guard` | 0 | if 1: a pocket escape whose walk to the takeoff makes no progress for 2 s is given up for 5 s (waiting for energy and flying are not counted) |
 | `lethal_k` | 0.8 | early laser release when this share of the partial-charge damage kills |
 | `open_recover` | 0 | if 1: in the first 60 s, after losing an exchange with the target (it hit us within 1.5 s and is clearly healthier, or we hold only the gun against a better-armed mech), back off for 5.5 s: cover search, else withdraw out of its sight 20 m further away with boost |
+| `laser_v` | 150 | minimum loot value of a sought laser pickup |
+| `crate_nolaser` | 1 | crate loot value multiplier while no laser is held (crates can drop weapons) |
 
 ---
 

@@ -48,14 +48,14 @@ type Land struct {
 	floor              []float32
 	blocks             []block
 
-	bx0, by0     float64
-	bnx, bny     int
-	binBlocks    [][]int32
-	cnx, cny     int
-	landCap      []float64
-	crest, tread []float32
-	hindered     []bool
-	sheets       map[int32][]sheet
+	bx0, by0         float64
+	binCols, binRows int
+	binBlocks        [][]int32
+	cnx, cny         int
+	landCap          []float64
+	crest, tread     []float32
+	hindered         []bool
+	sheets           map[int32][]sheet
 
 	cols, rows int
 	sealed     []bool
@@ -139,10 +139,10 @@ func LoadLand(mapDir string) (*Land, error) {
 	for i := 0; i < n && 2*i+1 < len(hb); i++ {
 		L.floor[i] = float32(int16(binary.LittleEndian.Uint16(hb[2*i:]))) * 0.01
 	}
-	type rings struct {
+	type ringCount struct {
 		all [][]float64
 	}
-	var prismRings []rings
+	var prismRings []ringCount
 	for _, p := range wf.Prisms {
 		rs := [][]float64{p.Ring}
 		rs = append(rs, p.Holes...)
@@ -154,7 +154,7 @@ func LoadLand(mapDir string) (*Land, error) {
 				lines = append(lines, r[2*a], r[2*a+1], r[2*c], r[2*c+1])
 			}
 		}
-		prismRings = append(prismRings, rings{rs})
+		prismRings = append(prismRings, ringCount{rs})
 		if len(lines) == 0 {
 			continue
 		}
@@ -179,9 +179,9 @@ func LoadLand(mapDir string) (*Land, error) {
 // ------------------------------------------------------------------ bins
 func (L *Land) makeBins() {
 	L.bx0, L.by0 = L.ex0-binSize, L.ey0-binSize
-	L.bnx = int(math.Ceil((L.ex1-L.ex0)/binSize)) + 3
-	L.bny = int(math.Ceil((L.ey1-L.ey0)/binSize)) + 3
-	L.binBlocks = make([][]int32, L.bnx*L.bny)
+	L.binCols = int(math.Ceil((L.ex1-L.ex0)/binSize)) + 3
+	L.binRows = int(math.Ceil((L.ey1-L.ey0)/binSize)) + 3
+	L.binBlocks = make([][]int32, L.binCols*L.binRows)
 	for i := range L.blocks {
 		b := &L.blocks[i]
 		L.eachBin(b.x0, b.y0, b.x1, b.y1, func(c int) {
@@ -193,20 +193,20 @@ func (L *Land) makeBins() {
 func (L *Land) binOf(x, y float64) int {
 	i := int(math.Floor((x - L.bx0) / binSize))
 	j := int(math.Floor((y - L.by0) / binSize))
-	if i < 0 || j < 0 || i >= L.bnx || j >= L.bny {
+	if i < 0 || j < 0 || i >= L.binCols || j >= L.binRows {
 		return -1
 	}
-	return j*L.bnx + i
+	return j*L.binCols + i
 }
 
 func (L *Land) eachBin(x0, y0, x1, y1 float64, f func(int)) {
 	i0 := max(0, int(math.Floor((x0-L.bx0)/binSize)))
-	i1 := min(L.bnx-1, int(math.Floor((x1-L.bx0)/binSize)))
+	i1 := min(L.binCols-1, int(math.Floor((x1-L.bx0)/binSize)))
 	j0 := max(0, int(math.Floor((y0-L.by0)/binSize)))
-	j1 := min(L.bny-1, int(math.Floor((y1-L.by0)/binSize)))
+	j1 := min(L.binRows-1, int(math.Floor((y1-L.by0)/binSize)))
 	for j := j0; j <= j1; j++ {
 		for i := i0; i <= i1; i++ {
-			f(j*L.bnx + i)
+			f(j*L.binCols + i)
 		}
 	}
 }
@@ -226,26 +226,26 @@ func (L *Land) traceBins(x0, y0, x1, y1 float64, f func(int) bool) {
 		sj = 1
 	}
 	inf := math.Inf(1)
-	tdx, tdy, tmx, tmy := inf, inf, inf, inf
+	stepTx, stepTy, nextTx, nextTy := inf, inf, inf, inf
 	if math.Abs(dx) > 1e-9 {
-		tdx = binSize / math.Abs(dx)
+		stepTx = binSize / math.Abs(dx)
 		if dx > 0 {
-			tmx = (float64(ci+1)*binSize + L.bx0 - x0) / math.Abs(dx)
+			nextTx = (float64(ci+1)*binSize + L.bx0 - x0) / math.Abs(dx)
 		} else {
-			tmx = (x0 - (float64(ci)*binSize + L.bx0)) / math.Abs(dx)
+			nextTx = (x0 - (float64(ci)*binSize + L.bx0)) / math.Abs(dx)
 		}
 	}
 	if math.Abs(dy) > 1e-9 {
-		tdy = binSize / math.Abs(dy)
+		stepTy = binSize / math.Abs(dy)
 		if dy > 0 {
-			tmy = (float64(cj+1)*binSize + L.by0 - y0) / math.Abs(dy)
+			nextTy = (float64(cj+1)*binSize + L.by0 - y0) / math.Abs(dy)
 		} else {
-			tmy = (y0 - (float64(cj)*binSize + L.by0)) / math.Abs(dy)
+			nextTy = (y0 - (float64(cj)*binSize + L.by0)) / math.Abs(dy)
 		}
 	}
 	for it := 0; it < 4096; it++ {
-		if ci >= 0 && ci < L.bnx && cj >= 0 && cj < L.bny {
-			if !f(cj*L.bnx + ci) {
+		if ci >= 0 && ci < L.binCols && cj >= 0 && cj < L.binRows {
+			if !f(cj*L.binCols + ci) {
 				return
 			}
 		}
@@ -253,13 +253,13 @@ func (L *Land) traceBins(x0, y0, x1, y1 float64, f func(int) bool) {
 			return
 		}
 		var t float64
-		if tmx < tmy {
-			t = tmx
-			tmx += tdx
+		if nextTx < nextTy {
+			t = nextTx
+			nextTx += stepTx
 			ci += si
 		} else {
-			t = tmy
-			tmy += tdy
+			t = nextTy
+			nextTy += stepTy
 			cj += sj
 		}
 		if t > 1 {
@@ -272,31 +272,31 @@ func (L *Land) traceBins(x0, y0, x1, y1 float64, f func(int) bool) {
 func (L *Land) makeLandCaps() {
 	fw, fh := L.fw, L.fh
 	L.cnx, L.cny = (fw+7)/8, (fh+7)/8
-	bm := make([]float64, L.cnx*L.cny)
-	for i := range bm {
-		bm[i] = -1e30
+	blockPeak := make([]float64, L.cnx*L.cny)
+	for i := range blockPeak {
+		blockPeak[i] = -1e30
 	}
 	for j := 0; j < fh; j++ {
 		for i := 0; i < fw; i++ {
 			v := float64(L.floor[j*fw+i])
 			k := (j/8)*L.cnx + i/8
-			if v > bm[k] {
-				bm[k] = v
+			if v > blockPeak[k] {
+				blockPeak[k] = v
 			}
 		}
 	}
-	L.landCap = make([]float64, len(bm))
+	L.landCap = make([]float64, len(blockPeak))
 	for j := 0; j < L.cny; j++ {
 		for i := 0; i < L.cnx; i++ {
-			v := bm[j*L.cnx+i]
+			v := blockPeak[j*L.cnx+i]
 			if i+1 < L.cnx {
-				v = math.Max(v, bm[j*L.cnx+i+1])
+				v = math.Max(v, blockPeak[j*L.cnx+i+1])
 			}
 			if j+1 < L.cny {
-				v = math.Max(v, bm[(j+1)*L.cnx+i])
+				v = math.Max(v, blockPeak[(j+1)*L.cnx+i])
 			}
 			if i+1 < L.cnx && j+1 < L.cny {
-				v = math.Max(v, bm[(j+1)*L.cnx+i+1])
+				v = math.Max(v, blockPeak[(j+1)*L.cnx+i+1])
 			}
 			L.landCap[j*L.cnx+i] = v
 		}
@@ -373,7 +373,7 @@ func (L *Land) makeLayers(wf *worldFile) {
 		sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].base < pieces[b].base })
 		g := L.floor[idx]
 		top := g
-		deck := float32(-1e9)
+		bridgeTop := float32(-1e9)
 		low := false
 		for _, pc := range pieces {
 			if pc.top <= top {
@@ -386,15 +386,15 @@ func (L *Land) makeLayers(wf *worldFile) {
 			L.sheets[idx] = append(L.sheets[idx], sheet{pc.base, pc.top})
 			if pc.base-top < 10.5 {
 				if pc.bridge && pc.top-g < 6.5 {
-					deck = pc.top
+					bridgeTop = pc.top
 				} else {
 					low = true
 				}
 			}
 		}
 		L.crest[idx] = top
-		if deck > top {
-			L.tread[idx] = deck
+		if bridgeTop > top {
+			L.tread[idx] = bridgeTop
 		} else {
 			L.tread[idx] = top
 		}
@@ -415,7 +415,7 @@ func (L *Land) Inside(x, y float64) bool {
 }
 
 // pile: height and block index of the solid stack under (x, y); deck = also step onto low bridge decks.
-func (L *Land) pile(x, y float64, deck bool) (float64, int) {
+func (L *Land) pile(x, y float64, bridgeTop bool) (float64, int) {
 	g := L.FloorZ(x, y)
 	z, which := g, -1
 	c := L.binOf(x, y)
@@ -430,7 +430,7 @@ func (L *Land) pile(x, y float64, deck bool) (float64, int) {
 			if b.top <= z || x < b.x0 || x > b.x1 || y < b.y0 || y > b.y1 {
 				continue
 			}
-			if !(b.base <= z+1.5 || (deck && b.bridge && b.top-g < 6.5)) {
+			if !(b.base <= z+1.5 || (bridgeTop && b.bridge && b.top-g < 6.5)) {
 				continue
 			}
 			if insidePoly(b.lines, x, y) {
@@ -602,7 +602,7 @@ func (L *Land) hitGround(x, y, z, x1, y1, z1, tmax float64) bool {
 		px, py := x+dx*t, y+dy*t
 		bi := int(math.Floor((px - L.ox) / 8.0))
 		bj := int(math.Floor((py - L.oy) / 8.0))
-		inb := bi >= 0 && bi < L.cnx && bj >= 0 && bj < L.cny
+		inBlock := bi >= 0 && bi < L.cnx && bj >= 0 && bj < L.cny
 		tb := tmax
 		if hl > 1e-9 {
 			ex, ey := L.ox+float64(bi)*8.0, L.oy+float64(bj)*8.0
@@ -619,7 +619,7 @@ func (L *Land) hitGround(x, y, z, x1, y1, z1, tmax float64) bool {
 			}
 			tb = math.Min(t+math.Max(0, math.Min(nx, ny))+1e-6, tmax)
 		}
-		if inb && math.Min(z+dz*t, z+dz*tb) > L.landCap[bj*L.cnx+bi] {
+		if inBlock && math.Min(z+dz*t, z+dz*tb) > L.landCap[bj*L.cnx+bi] {
 			t = tb
 			continue
 		}

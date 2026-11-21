@@ -51,7 +51,7 @@ func (L *Land) layGrid() {
 	}
 	L.patch = make([]int32, n)
 	var label, bestLabel int32
-	bestSize := 0
+	biggestPatch := 0
 	for c0 := 0; c0 < n; c0++ {
 		if L.sealed[c0] || L.patch[c0] != 0 {
 			continue
@@ -74,8 +74,8 @@ func (L *Land) layGrid() {
 				}
 			}
 		}
-		if len(q) > bestSize {
-			bestSize, bestLabel = len(q), label
+		if len(q) > biggestPatch {
+			biggestPatch, bestLabel = len(q), label
 		}
 	}
 	L.hub = bestLabel
@@ -99,7 +99,7 @@ func (L *Land) OpenNear(c int) int {
 	}
 	cols, rows := L.cols, L.rows
 	ci, cj := c%cols, c/cols
-	best, bestD := -1, 1<<30
+	best, pickDist := -1, 1<<30
 	for r := 1; r <= 20; r++ {
 		for dj := -r; dj <= r; dj++ {
 			for di := -r; di <= r; di++ {
@@ -109,8 +109,8 @@ func (L *Land) OpenNear(c int) int {
 				i, j := ci+di, cj+dj
 				if i >= 0 && i < cols && j >= 0 && j < rows && !L.sealed[j*cols+i] {
 					d := di*di + dj*dj
-					if d < bestD {
-						best, bestD = j*cols+i, d
+					if d < pickDist {
+						best, pickDist = j*cols+i, d
 					}
 				}
 			}
@@ -207,7 +207,7 @@ func (L *Land) Breakout(x, y float64) (Vec2, Vec2, bool) {
 	cols, rows := L.cols, L.rows
 	steps := map[int]int{s: 0}
 	q := []int{s}
-	best, bestS := -1, math.Inf(1)
+	best, pickScore := -1, math.Inf(1)
 	for k := 0; k < len(q) && k < 60000; k++ {
 		c := q[k]
 		ci, cj := c%cols, c/cols
@@ -215,8 +215,8 @@ func (L *Land) Breakout(x, y float64) (Vec2, Vec2, bool) {
 			cx, cy := L.CellXY(c)
 			mx, my := L.CellXY(m)
 			sc := float64(steps[c])*pitch + 4*math.Hypot(mx-cx, my-cy)
-			if sc < bestS {
-				best, bestS = c, sc
+			if sc < pickScore {
+				best, pickScore = c, sc
 			}
 		}
 		for hi, h := range hops {
@@ -317,17 +317,17 @@ func (h *openList) take() openEntry {
 }
 
 type router struct {
-	cost  []float32
-	came  []int32
-	stamp []uint32
-	shut  []uint32
-	gen   uint32
-	open  openList
+	cost      []float32
+	parentOf  []int32
+	visitMark []uint32
+	shut      []uint32
+	runID     uint32
+	open      openList
 }
 
 // Route: cells from start to goal (or to the closest reached cell when the goal is out of reach);
 // nil when either end has no open cell nearby.
-func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
+func (L *Land) Route(R *router, sx, sy, gx, gy float64, expandCap int) []int {
 	s := L.OpenNear(L.CellAt(sx, sy))
 	g := L.OpenNear(L.CellAt(gx, gy))
 	if s < 0 || g < 0 {
@@ -340,33 +340,33 @@ func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
 	n := cols * rows
 	if len(R.cost) != n {
 		R.cost = make([]float32, n)
-		R.came = make([]int32, n)
-		R.stamp = make([]uint32, n)
+		R.parentOf = make([]int32, n)
+		R.visitMark = make([]uint32, n)
 		R.shut = make([]uint32, n)
 	}
-	R.gen++
-	gen := R.gen
+	R.runID++
+	runID := R.runID
 	gi, gj := g%cols, g/cols
 	h := func(c int) float32 {
 		dx, dy := float64(abs(c%cols-gi)), float64(abs(c/cols-gj))
 		return float32((math.Max(dx, dy) + 0.4142*math.Min(dx, dy)) * pitch * 1.15)
 	}
 	R.open = R.open[:0]
-	R.cost[s], R.came[s], R.stamp[s] = 0, -1, gen
+	R.cost[s], R.parentOf[s], R.visitMark[s] = 0, -1, runID
 	R.open.add(openEntry{h(s), int32(s)})
-	best, bestH := s, h(s)
-	for expanded := 0; len(R.open) > 0 && expanded < maxExpand; expanded++ {
+	best, nearestH := s, h(s)
+	for expanded := 0; len(R.open) > 0 && expanded < expandCap; expanded++ {
 		c := int(R.open.take().cell)
-		if R.shut[c] == gen {
+		if R.shut[c] == runID {
 			continue
 		}
-		R.shut[c] = gen
+		R.shut[c] = runID
 		if c == g {
 			best = c
 			break
 		}
-		if hc := h(c); hc < bestH {
-			best, bestH = c, hc
+		if hNow := h(c); hNow < nearestH {
+			best, nearestH = c, hNow
 		}
 		ci, cj := c%cols, c/cols
 		for hi, hp := range hops {
@@ -376,7 +376,7 @@ func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
 			}
 			nb := j*cols + i
 			diag := hi >= 4
-			if R.shut[nb] == gen || !L.CanHop(c, nb, diag) {
+			if R.shut[nb] == runID || !L.CanHop(c, nb, diag) {
 				continue
 			}
 			step := float32(pitch)
@@ -389,15 +389,15 @@ func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
 			if cl := L.margin[nb]; cl < 4 {
 				step *= 1 + (4-cl)*0.15
 			}
-			ng := R.cost[c] + step
-			if R.stamp[nb] != gen || ng < R.cost[nb] {
-				R.cost[nb], R.came[nb], R.stamp[nb] = ng, int32(c), gen
-				R.open.add(openEntry{ng + h(nb), int32(nb)})
+			newCost := R.cost[c] + step
+			if R.visitMark[nb] != runID || newCost < R.cost[nb] {
+				R.cost[nb], R.parentOf[nb], R.visitMark[nb] = newCost, int32(c), runID
+				R.open.add(openEntry{newCost + h(nb), int32(nb)})
 			}
 		}
 	}
 	var path []int
-	for c := best; c >= 0; c = int(R.came[c]) {
+	for c := best; c >= 0; c = int(R.parentOf[c]) {
 		path = append(path, c)
 		if c == s {
 			break
