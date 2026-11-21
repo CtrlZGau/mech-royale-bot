@@ -22,6 +22,7 @@ DEFAULTS = {
     "all_alive": 6,          # everyone hunts once alive mechs <= this
     "hunt_order": 1,         # 1: weakest difficulty hunts first; 0: nearest bots hunt first
     "omniscient": 1,         # hunters always know where the target is (else: last squad sighting)
+    "search_s": 1e9,         # (omniscient=0) hunters search the last sighting this long, then roam
     "roam_frac": 1.2,        # roamers wander within roam_frac * next radius of the next centre
     "roam_engage": 25.0,    # non-hunters shoot the target if the squad sees it within this
     "hunt_engage": 200.0,    # hunters start shooting inside this range
@@ -342,8 +343,10 @@ class HouseBot:
             elif self.hunter and target is not None:
                 if p["omniscient"] or know:
                     gx, gy = target.x, target.y
+                elif self.sq.last_pos and M.t - self.sq.last_seen_t < p["search_s"]:
+                    gx, gy = self.sq.last_pos
                 else:
-                    gx, gy = self.sq.last_pos if self.sq.last_pos else self._roam_goal()
+                    gx, gy = self._roam_goal()  # gave up searching
                 mv = self._loot_weapon(act, 40.0) if m.weapons[1] is None else None
                 if mv is None:
                     mv = self._move_toward(gx, gy)

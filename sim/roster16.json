@@ -1,0 +1,166 @@
+[
+ {
+  "name": "mechbot-4.10 (120f1ff)",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "mb"
+  }
+ },
+ {
+  "name": "mechbot-stealth (496c943)",
+  "cmd": [
+   "python3",
+   "-u",
+   "/tmp/claude-1000/-home-gb-mech-game/d62d4b17-f398-4693-ad15-3381ad4e0730/scratchpad/versions/mb-496c943/bot.py"
+  ]
+ },
+ {
+  "name": "mechbot-v2 (7c7b5b5)",
+  "cmd": [
+   "python3",
+   "-u",
+   "/tmp/claude-1000/-home-gb-mech-game/d62d4b17-f398-4693-ad15-3381ad4e0730/scratchpad/versions/mb-7c7b5b5/bot.py"
+  ]
+ },
+ {
+  "name": "mechbot-v1 (1bb010d)",
+  "cmd": [
+   "python3",
+   "-u",
+   "/tmp/claude-1000/-home-gb-mech-game/d62d4b17-f398-4693-ad15-3381ad4e0730/scratchpad/versions/mb-1bb010d/bot.py"
+  ]
+ },
+ {
+  "name": "EvadeBot (mb+our evade)",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "mbe"
+  }
+ },
+ {
+  "name": "V2 evade (ours)",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v2"
+  }
+ },
+ {
+  "name": "v0 (3.25)",
+  "cmd": [
+   "python3",
+   "-u",
+   "/tmp/claude-1000/-home-gb-mech-game/d62d4b17-f398-4693-ad15-3381ad4e0730/scratchpad/versions/v0-3.25/bot/main.py"
+  ]
+ },
+ {
+  "name": "v1.1 (1.77)",
+  "cmd": [
+   "python3",
+   "-u",
+   "/tmp/claude-1000/-home-gb-mech-game/d62d4b17-f398-4693-ad15-3381ad4e0730/scratchpad/versions/6fd8444/bot/main.py"
+  ]
+ },
+ {
+  "name": "v1.2 (2.98)",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v1"
+  }
+ },
+ {
+  "name": "v1.3 (v0+fixes)",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0",
+   "MECH_FEATURES": "none"
+  }
+ },
+ {
+  "name": "v0+scan",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0",
+   "MECH_FEATURES": "scan"
+  }
+ },
+ {
+  "name": "v0+dodge",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0",
+   "MECH_FEATURES": "dodge"
+  }
+ },
+ {
+  "name": "v0+far_band",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0",
+   "MECH_FEATURES": "far_band"
+  }
+ },
+ {
+  "name": "v0+backoff45",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0",
+   "MECH_FEATURES": "backoff45"
+  }
+ },
+ {
+  "name": "v0+all flags",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0",
+   "MECH_FEATURES": "scan,dodge,far_band,backoff45"
+  }
+ },
+ {
+  "name": "kit example (1.15)",
+  "cmd": [
+   "python3",
+   "-u",
+   "kit/python/example_bot.py"
+  ]
+ }
+]
