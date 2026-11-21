@@ -552,4 +552,5 @@ def setup(M, params=None):
     n_house = sum(1 for m in M.mechs if m.team == "house")
     diffs = (diffs * 2)[:n_house]
     M.squad = Squad(M, params, diffs)
+    M.npc_lead = float((params or {}).get("npc_lead", 1.0))
     return M.squad

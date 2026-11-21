@@ -1245,7 +1245,7 @@ class Match:
                 if not self.map.sight_blocked(ox, oy, oz, tgt.x, tgt.y, tz, trees=False):
                     sp = nc["projectile_speed"]
                     # lead
-                    tt = d / sp
+                    tt = d / sp * getattr(self, "npc_lead", 1.0)  # calibration: 1 = perfect lead, 0 = none
                     px, py, pz = tgt.x + tgt.vx * tt, tgt.y + tgt.vy * tt, tz
                     yaw = math.atan2(py - oy, px - ox) + self.crng.gauss(0, math.radians(nc["spread_deg"]))
                     pitch = math.atan2(pz - oz, math.hypot(px - ox, py - oy)) + self.crng.gauss(0, math.radians(nc["spread_deg"]))
