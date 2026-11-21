@@ -24,6 +24,7 @@ Flags (env MB_FLAGS="anchor,aggro3" or the DEFAULT_FLAGS set below for the submi
   dualaim : while the laser charges (< 85%), aim with the gun's lead so the gun keeps firing; laser aim for release.
   laserclose: laser does not take over the torso inside 35 m (62% laser hit rate there in the sim).
   laserlong: laser drives the torso beyond 110 m even on cooldown (gun hit rate 75% at 120-160 m, 15% beyond).
+  loot2   : weapon pickups from 200 m (mechbot 120) at weight 0.3 x distance while a slot is empty (0.5).
   aggro   : any phase: fight a visible mech within 100 m while HP > 75% and no other mech within 160 m.
 """
 import math
@@ -78,6 +79,9 @@ class V3Bot(TimedBot):
             self.close_d = 90.0
         self.hp_w, self.stick_s, self.stick_b = 0.03, 3.0, 45.0
         self.laser_min_d = 35.0 if "laserclose" in self.flags else 0.0
+        self.pick_r, self.pick_w = 120.0, 0.5
+        if "loot2" in self.flags:
+            self.pick_r, self.pick_w = 200.0, 0.3
         if "focus" in self.flags:
             self.hp_w, self.stick_s, self.stick_b = 0.08, 6.0, 90.0
         if "npcsafe" in self.flags:
@@ -187,8 +191,8 @@ class V3Bot(TimedBot):
                 continue
             w = self.wanted_pickup(p)
             d = dist2(p["pos"], self.pos)
-            if w and d < 120 and self.zone_ok_now(p["pos"]) and abs(p["pos"][2] - self.pos[2]) < 25:
-                cands.append((d * (0.5 if None in self.held() else 0.8), (p["pos"][0], p["pos"][1]), "pickup", None))
+            if w and d < self.pick_r and self.zone_ok_now(p["pos"]) and abs(p["pos"][2] - self.pos[2]) < 25:
+                cands.append((d * (self.pick_w if None in self.held() else 0.8), (p["pos"][0], p["pos"][1]), "pickup", None))
         # supply drops
         for dr in obs.get("drops", []):
             d = dist2(dr["pos"], self.pos)

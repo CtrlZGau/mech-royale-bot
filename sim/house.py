@@ -205,6 +205,12 @@ class HouseBot:
         d_next = math.hypot(m.x - c1[0], m.y - c1[1])
         t = M.t
         # outside the current circle, or the shrink is coming and we're outside the next one
+        lag = self.sq.p.get(f"zone_lag_{self.diff}", 0.0)
+        if lag > 0:
+            # calibration: sloppy bots only react once they are `lag` m outside the current circle
+            if d_cur > r + lag:
+                return c1
+            return None
         if d_cur > r - 15 or (t > ss - 25 and d_next > r1 * 0.85):
             return c1
         return None

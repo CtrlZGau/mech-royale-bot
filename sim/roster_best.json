@@ -1,0 +1,188 @@
+[
+ {
+  "name": "mechbot 4.13",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "mb"
+  }
+ },
+ {
+  "name": "mechbot 4.13",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "mb"
+  }
+ },
+ {
+  "name": "mb+focus",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "focus"
+  }
+ },
+ {
+  "name": "mb+focus",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "focus"
+  }
+ },
+ {
+  "name": "mb+npcsafe",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "npcsafe"
+  }
+ },
+ {
+  "name": "mb+npcsafe",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "npcsafe"
+  }
+ },
+ {
+  "name": "mb+loot2",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "loot2"
+  }
+ },
+ {
+  "name": "mb+loot2",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "loot2"
+  }
+ },
+ {
+  "name": "mb+laserpref",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "laserpref"
+  }
+ },
+ {
+  "name": "mb+laserpref",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "laserpref"
+  }
+ },
+ {
+  "name": "mb+focus+loot2",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "focus,loot2"
+  }
+ },
+ {
+  "name": "mb+focus+loot2",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v3",
+   "MB_FLAGS": "focus,loot2"
+  }
+ },
+ {
+  "name": "v1.3 (v0 logic)",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0"
+  }
+ },
+ {
+  "name": "v1.3 (v0 logic)",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "v0"
+  }
+ },
+ {
+  "name": "EvadeBot",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "mbe"
+  }
+ },
+ {
+  "name": "EvadeBot",
+  "cmd": [
+   "python3",
+   "-u",
+   "bot/main.py"
+  ],
+  "env": {
+   "MECH_POLICY": "mbe"
+  }
+ }
+]
