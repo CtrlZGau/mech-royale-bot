@@ -36,7 +36,7 @@ GUARD = dict(fight_close=60.0, max_range=215.0, hp_weight=60.0 / 1400, wounded_b
              crate_until=150.0, laser_first=False)
 HUNT = dict(fight_close=60.0, max_range=240.0, hp_weight=0.2, wounded_bonus=100.0, keep_bonus=120.0,
             pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=140.0,
-            loot_r=150.0, laser_r=240.0, farm_hp=0.5, cube_fight_r=70.0, finish_r=14.0, laser_ups=True, peek=False)
+            loot_r=150.0, laser_r=240.0, farm_hp=0.5, cube_fight_r=70.0, finish_r=14.0, laser_ups=True, peek=False, speed_ups=False)
 
 UPG_GUNLINE = ["plating", "armor", "gun_damage", "nanites", "gun_rate", "lightning_efficiency", "lightning_range",
                "laser_damage", "servos", "laser_charge", "gun_mag", "gun_velocity", "gyros", "lightning_chain",
@@ -46,6 +46,10 @@ UPG_LASERLINE = ["plating", "armor", "laser_damage", "laser_charge", "nanites", 
                  "lightning_efficiency", "lightning_range", "servos", "gun_mag", "gun_velocity", "gyros",
                  "lightning_chain", "reactor", "capacitor", "mortar_reload", "mortar_splash", "mortar_velocity",
                  "sensors", "jets", "laser_pierce"]
+UPG_SPEEDLINE = ["plating", "armor", "servos", "jets", "reactor", "laser_damage", "laser_charge", "nanites",
+                 "gun_damage", "gun_rate", "lightning_efficiency", "lightning_range", "gun_mag", "gun_velocity",
+                 "gyros", "lightning_chain", "capacitor", "mortar_reload", "mortar_splash", "mortar_velocity",
+                 "sensors", "laser_pierce"]
 SLOT_VALUE = {"laser": 4, "lightning": 3, "mortar": 0}  # mortar never wanted (laser-first)
 SLOT_VALUE_PLAIN = {"lightning": 3, "laser": 2, "mortar": 0}
 OTHERS_DEAD_TICKS = 5  # decisions in a row with a death we did not cause -> Guard for the rest of the match
@@ -647,7 +651,7 @@ class WardenBot(TimedBot):
         endgame = z["next_radius"] <= 70 or obs["alive"] <= 3
 
         if obs.get("offer"):
-            order = UPG_LASERLINE if K["laser_ups"] else UPG_GUNLINE
+            order = UPG_SPEEDLINE if K.get("speed_ups") else (UPG_LASERLINE if K["laser_ups"] else UPG_GUNLINE)
             ids = [ch["id"] for ch in obs["offer"]["choices"]]
             act["pick"] = min(range(len(ids)), key=lambda i: order.index(ids[i]) if ids[i] in order else 99)
 
