@@ -8,6 +8,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM scratch
 COPY --from=build /out/warden /bot/warden
-# Practice test: give up a pocket escape whose walk to the takeoff stops making progress (remove for defaults).
-ENV WD_P="g.esc_guard=1"
+# Hunt tuning: early laser release at 70 % of a lethal partial charge, target HP weight 0.18 (remove for defaults).
+ENV WD_P="g.lethal_k=0.7,hunt.hp_weight=0.18"
 ENTRYPOINT ["/bot/warden"]
