@@ -10,7 +10,7 @@ for SPEC in "$@"; do
   IFS='|' read -r NAME F MP <<< "$SPEC"
   out="logs/simcombat/$NAME"; rm -rf "$out"; mkdir -p "$out"
   rm -f logs/sim/trace-*.jsonl
-  env MECH_POLICY=v3 MB_FLAGS="$F" MB_P="$MP" python3 sim/run.py --seeds "$SEEDS" --jobs 22 $P --trace \
+  env MECH_POLICY=v3 MB_FLAGS="$F" MB_P="$MP" python3 sim/run.py --seeds "$SEEDS" --jobs 8 $P --trace \
       -- python3 -u bot/main.py 2>&1 | grep -m1 "^score" | sed "s/^/[$NAME] /"
   mv logs/sim/trace-*.jsonl "$out"/
   dirs+=("$out")

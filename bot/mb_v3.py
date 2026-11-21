@@ -25,6 +25,11 @@ Flags (env MB_FLAGS="anchor,aggro3" or the DEFAULT_FLAGS set below for the submi
   laserclose: laser does not take over the torso inside 35 m (62% laser hit rate there in the sim).
   laserlong: laser drives the torso beyond 110 m even on cooldown (gun hit rate 75% at 120-160 m, 15% beyond).
   loot2   : weapon pickups from 200 m (mechbot 120) at weight 0.3 x distance while a slot is empty (0.5).
+  cubemax : cubes first whenever not fighting: visible cubes from 250 m at weight 0.25 x d (mechbot 90 m,
+            0.6), crates from 170 m above 50% HP at 0.6 x d (110 m, 60%, 0.9), drones from 170 m above 65% HP
+            (130 m, 75%), mid-fight cube detour within 40 m (25 m).
+  aimfix  : gun gate 0.5 x radius beyond 100 m (where hit rate drops to 82%); own-position prediction includes
+            acceleration toward the commanded move (direction flips: 90% vs 93% hit rate).
   aggro   : any phase: fight a visible mech within 100 m while HP > 75% and no other mech within 160 m.
 """
 import math
@@ -36,7 +41,7 @@ from mb_bot import TimedBot, dist2, unit, wrap
 
 PI = math.pi
 TAU = 2 * PI
-DEFAULT_FLAGS = {"focus", "loot2"}  # practice experiment: sim +0.21 (CI -0.08..+0.49), FFA tied best
+DEFAULT_FLAGS = {"cubemax"}  # practice experiment: user cube strategy alone on mechbot (focus hurt twice in practice)
 _env = os.environ.get("MB_FLAGS")
 FLAGS = set(x.strip() for x in _env.split(",") if x.strip()) if _env is not None else set(DEFAULT_FLAGS)
 
@@ -80,6 +85,13 @@ class V3Bot(TimedBot):
         self.hp_w, self.stick_s, self.stick_b = 0.03, 3.0, 45.0
         self.laser_min_d = 35.0 if "laserclose" in self.flags else 0.0
         self.pick_r, self.pick_w = 120.0, 0.5
+        self.cube_w, self.crate_w, self.npc_w, self.cube_fight_r = 0.6, 0.9, 1.0, 25.0
+        if "cubemax" in self.flags:
+            # cubes first whenever we are not fighting (user strategy)
+            self.cube_r, self.cube_w = 250.0, 0.25
+            self.crate_r, self.crate_hp, self.crate_w = 170.0, 0.5, 0.6
+            self.npc_r, self.npc_hp, self.npc_w = 170.0, 0.65, 0.8
+            self.cube_fight_r = 40.0
         if "loot2" in self.flags:
             self.pick_r, self.pick_w = 200.0, 0.3
         if "focus" in self.flags:
@@ -184,7 +196,7 @@ class V3Bot(TimedBot):
         for c in obs.get("cubes", []):
             d = dist2(c["pos"], self.pos)
             if d < self.cube_r and self.zone_ok_now(c["pos"]) and abs(c["pos"][2] - self.pos[2]) < 25:
-                cands.append((d * 0.6, (c["pos"][0], c["pos"][1]), "cube", None))
+                cands.append((d * self.cube_w, (c["pos"][0], c["pos"][1]), "cube", None))
         # weapon pickups we want
         for p in obs.get("pickups", []):
             if self.t - self.failed_take.get(p["id"], -99) < 4:
@@ -209,13 +221,13 @@ class V3Bot(TimedBot):
                 d = dist2(cr["pos"], self.pos)
                 if d < self.crate_r and self.zone_ok_now(cr["pos"]):
                     tp = [cr["pos"][0], cr["pos"][1], cr["pos"][2] + 1.2]
-                    cands.append((d * 0.9 + 10, (cr["pos"][0], cr["pos"][1]), "crate", (tp, [0, 0, 0], 1.4, "crate")))
+                    cands.append((d * self.crate_w + 10, (cr["pos"][0], cr["pos"][1]), "crate", (tp, [0, 0, 0], 1.4, "crate")))
         if not healing and hpf > self.npc_hp and self.t - self.last_hit_t > 3:
             for n in npcs:
                 d = dist2(n["pos"], self.pos)
                 if d < self.npc_r and n.get("hp", 350) > 0:
                     tp = [n["pos"][0], n["pos"][1], n["pos"][2] + 1.75]
-                    cands.append((d + 25, (n["pos"][0], n["pos"][1]), "npc", (tp, n.get("vel", [0, 0, 0]), 1.8, "npc")))
+                    cands.append((d * self.npc_w + 25, (n["pos"][0], n["pos"][1]), "npc", (tp, n.get("vel", [0, 0, 0]), 1.8, "npc")))
         if cands:
             cands.sort(key=lambda c: c[0])
             _, g, k, extra = cands[0]
@@ -368,7 +380,7 @@ class V3Bot(TimedBot):
             # cubes nearby are worth a detour unless the enemy is on top of us
             if self.mode != "retreat" and d > 40:
                 cube = min(obs.get("cubes", []), key=lambda c: dist2(c["pos"], self.pos), default=None)
-                if cube is not None and dist2(cube["pos"], self.pos) < 25 and abs(cube["pos"][2] - self.pos[2]) < 4:
+                if cube is not None and dist2(cube["pos"], self.pos) < self.cube_fight_r and abs(cube["pos"][2] - self.pos[2]) < 4:
                     move = self.blend(self.navigate((cube["pos"][0], cube["pos"][1])), move, 0.75)
                     self.note = "cube"
             if zone_urgent:
@@ -431,6 +443,17 @@ class V3Bot(TimedBot):
         # the shot leaves during the next decision window: aim from where we'll be
         x += me["vel"][0] * 0.05
         y += me["vel"][1] * 0.05
+        if "aimfix" in self.flags:
+            # plus the velocity change toward our last commanded move (ground accel), mid-strafe-flip
+            acc = me["stats"].get("ground_accel", 58.5) if me.get("grounded") else me["stats"].get("air_accel", 12)
+            lm = self.last_move or (0.0, 0.0)
+            sp = me["stats"].get("walk_speed", 11.7)
+            dvx, dvy = lm[0] * sp - me["vel"][0], lm[1] * sp - me["vel"][1]
+            dv = math.hypot(dvx, dvy)
+            if dv > 1e-6:
+                k = min(1.0, acc * 0.05 / dv)  # how much of the change happens in 0.05 s
+                x += 0.5 * dvx * k * 0.05
+                y += 0.5 * dvy * k * 0.05
         mh = me["stats"].get("muzzle_height", 7)
         mz = z + mh
         d = math.hypot(tp[0] - x, tp[1] - y)
@@ -510,7 +533,8 @@ class V3Bot(TimedBot):
             gun_max = min(gun_max, self.gun_move_max)
         if gun and gun_aim and los and gun.get("ammo", 1) > 0 and gun.get("reload", 0) == 0 and d < gun_max:
             ey, ep = err(*gun_aim)
-            if ey < math.atan2(trad * self.gun_gate, max(d, 1.0)) + 0.004 and ep < math.atan2(3.0, max(d, 1.0)) + 0.004:
+            gate = self.gun_gate if not ("aimfix" in self.flags and d > 100) else min(self.gun_gate, 0.5)
+            if ey < math.atan2(trad * gate, max(d, 1.0)) + 0.004 and ep < math.atan2(3.0, max(d, 1.0)) + 0.004:
                 fire[slots["gun"]] = True
         # laser: hold to charge, release when full and on target
         if laser:
