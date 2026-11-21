@@ -86,28 +86,10 @@ Global switches (`g.*`):
 | `cube_v` | 75 | loot value of a cube (25 once at the cube stat cap) |
 | `esc_guard` | 0 | if 1: a pocket escape whose walk to the takeoff makes no progress for 2 s is given up for 5 s (waiting for energy and flying are not counted) |
 | `lethal_k` | 0.8 | early laser release when this share of the partial-charge damage kills |
-| `open_recover` | 0 | if 1: in the first 60 s, after losing an exchange with the target (it hit us within 1.5 s and is clearly healthier, or we hold only the gun against a better-armed mech), back off for 5.5 s: cover search, else withdraw out of its sight 20 m further away with boost |
 | `laser_v` | 150 | minimum loot value of a sought laser pickup |
 | `crate_nolaser` | 1 | crate loot value multiplier while no laser is held (crates can drop weapons) |
-| `vulture` | 0 | if > 0 (Scout/Guard): also fight a mech below this HP fraction that is not facing us (our HP > 75 %, within 165 m) |
-| `alert` | 0 | if > 0 (Scout/Guard): fight a shootable mech within this range that is approaching faster than 3 m/s or aiming at us |
-| `shy` | 0 | if > 0 (Scout/Guard): with no foe, take cover from a shootable mech beyond fight range but within this range that is approaching or aiming at us |
-| `ambush` | 0 | if > 0 (Scout/Guard): fight a mech facing away from us (more than 1.75 rad) within this range, our HP > 85 % |
-| `odds` | 0 | if > 0 (Scout/Guard): fight a shootable mech within weapon reach (our HP > 50 %) when the win estimate is at least this |
-| `odds_flee` | 0 | if > 0: back off for 5 s when the win estimate against the target falls below this (not while finishing) |
-| `early_hide` | 0 | if > 0: until this match time, take cover while any mech has a line of fire on us within 230 m (none within 45 m) |
-| `evade` | 0 | if 1: take cover from a foe beyond 1.2 × fight range that still has more than 45 % HP |
-| `pursue` | 0 | if > 0: with no target, go after the hidden engaged mech when its HP is below this fraction |
-| `opening` | 0 | if 1: during Scout, while no mech has died except to us, seek lasers from 240 m, loot from 150 m, and walk at full speed |
 | `fight_boost` | 0 | if > 0: in a fight, boost while energy is above this (not while charging a laser; with lightning only above 60) |
 | `dodge_boost` | 0 | if > 0: boost while sidestepping when energy is above this |
-| `threat_boost` | 0 | if > 0: boost while energy is above this whenever a foe is present or we were hurt in the last 2.5 s |
-
-**Win estimate** (used by `odds` and `odds_flee`): logistic of 1.5093 × ln(our HP / its HP) + 0.7049 × (our cubes − its
-cubes, each capped at 10) / 10 + 0.9583 × (our weapon count − its weapon count) − 0.5592 × (we are busy − it is busy);
-"busy" = another mech hit us within 6 s / it aims within 0.2 rad at another mech within 160 m. For `odds`, add 0.0562 +
-0.7475 × min(distance, 200) / 100, and 0.8235 if it faces away from us. Weapon reach: gun min(range − 10, 130), laser
-range − 5, lightning range.
 
 ---
 
