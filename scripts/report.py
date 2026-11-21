@@ -60,6 +60,7 @@ def analyse(ins, outs, names, kinds):
     got_weapon = {}
     prev = None
     stuck = 0
+    still = 0
     fight_ticks = 0
     multi_ticks = 0
     zone_out = 0
@@ -80,6 +81,8 @@ def analyse(ins, outs, names, kinds):
         if not s["in_zone"]:
             zone_out += 1
         cubes = max(cubes, s["cubes"])
+        if math.hypot(s["vel"][0], s["vel"][1]) < 1.0:
+            still += 1
         mv = a.get("move", [0, 0])
         if math.hypot(*mv) > 0.5 and math.hypot(s["vel"][0], s["vel"][1]) < 1.5:
             stuck += 1
@@ -136,7 +139,7 @@ def analyse(ins, outs, names, kinds):
     r.update({
         "dealt": sum(dealt.values()), "dealt_w": dict(dealt), "taken": tot_taken, "taken_w": dict(taken),
         "rear_pct": 100 * rear / tot_taken if tot_taken else 0, "zone_dmg": taken.get("zone", 0),
-        "zone_out_s": zone_out / 10, "stuck_s": stuck / 10, "fight_s": fight_ticks / 10,
+        "zone_out_s": zone_out / 10, "still_pct": 100 * still / len(obs), "stuck_s": stuck / 10, "fight_s": fight_ticks / 10,
         "multi_fight_s": multi_ticks / 10, "max_seen": max_seen, "cubes": cubes,
         "weapons": got_weapon, "take_fail": dict(fails), "shots": dict(shots), "hits": dict(hits),
         "cause": cause, "killer": killer,
@@ -195,6 +198,13 @@ def main():
     P(f"- Survival time: median {st.median([m['t_end'] for m in matches]):.0f} s")
     P(f"- Damage dealt/taken per match: {st.mean([m['dealt'] for m in matches]):.0f} / {st.mean([m['taken'] for m in matches]):.0f}")
     P(f"- Kills per match: {st.mean([m['kills'] for m in matches]):.2f}; cubes per match: {st.mean([m['cubes'] for m in matches]):.2f}")
+    tk = collections.Counter()
+    for m in matches:
+        tk.update(m["taken_w"])
+    P(f"- **Mechanism metrics:** deaths before 60 s: {sum((not m['won']) and m['t_end'] < 60 for m in matches)}/{n}; "
+      f"time stationary: {st.mean([m['still_pct'] for m in matches]):.0f}%; "
+      f"laser share of damage taken: {100 * tk.get('laser', 0) / max(sum(tk.values()), 1):.0f}%; "
+      f"stuck {st.mean([m['stuck_s'] for m in matches]):.1f} s/match; zone deaths {sum(m['cause'] == 'zone' for m in matches)}")
     causes = collections.Counter(m["cause"] for m in matches)
     P(f"- **Outcome / cause of death:** " + ", ".join(f"{k} ×{v}" for k, v in causes.most_common()))
     P("")
