@@ -229,6 +229,8 @@ def run_match(seed, cmds, params=None, record=False, replay_dir=None, no_timeout
                     acts[s] = {"aim": last_act[s].get("aim")} if last_act[s].get("aim") else {}
         acts.update(M.squad.decide())
         M.decide(acts)
+    if not M.over:
+        M._finish()  # stopped early (our mech died): rank survivors by HP, as at the time limit
     # end messages
     for s, b in bots.items():
         m = M.mechs[s]

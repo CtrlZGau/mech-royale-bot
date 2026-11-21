@@ -16,17 +16,18 @@ from .engine import Mech, wrap
 DEFAULTS = {
     # squad
     "h0": 1,                 # hunters at start
-    "h_per_kill": 2,         # extra hunters per house bot we kill
-    "h_per_min": 0.0,        # extra hunters per match minute
+    "h_per_kill": 1,         # extra hunters per house bot we kill
+    "h_per_min": 1.0,        # extra hunters per match minute
     "all_phase": 4,          # zone phase index (0-based) from which everybody hunts
     "all_alive": 6,          # everyone hunts once alive mechs <= this
+    "hunt_order": 1,         # 1: weakest difficulty hunts first; 0: nearest bots hunt first
     "omniscient": 1,         # hunters always know where the target is (else: last squad sighting)
-    "roam_engage": 100.0,    # non-hunters shoot the target if the squad sees it within this
+    "roam_engage": 25.0,    # non-hunters shoot the target if the squad sees it within this
     "hunt_engage": 200.0,    # hunters start shooting inside this range
     # combat
     "want_range": 60.0,      # preferred gun range
-    "aim_a": 1.5,            # lateral aim error sigma (m) = diff_mult * (aim_a + aim_b * dist)
-    "aim_b": 0.045,
+    "aim_a": 2.5,            # lateral aim error sigma (m) = diff_mult * (aim_a + aim_b * dist)
+    "aim_b": 0.07,
     "aim_rho": 0.85,         # AR(1) correlation of the aim error per decision
     "laser_release": 0.8,    # all house bots release the laser at 0.8 s
     "fire_gate": 0.05,       # fire only when actual aim is within this (rad) of commanded aim + target width
@@ -34,9 +35,13 @@ DEFAULTS = {
     "close_frac": 0.7,       # close in above this HP fraction
     "boost_p": 0.27,
     "hop_p": 0.04,           # per-decision chance to hop in a fight (airborne 17-45 % in live replays)
-    "start_weapon": 1,       # spawn with a random second weapon (else: loot it)
+    "start_weapon": 0,       # spawn with a random second weapon (else: loot it)
     "farm": 1,               # roamers break crates / shoot drones / grab cubes and loot
+    "farm_aim": 0.25,        # aim-error multiplier vs crates/drones (slow, predictable targets)
     "react": 1.0,            # multiplier on per-difficulty reaction time
+    # per-difficulty overrides (else DIFF below): aim_easy / aim_medium / aim_hard / aim_expert,
+    # firep_easy ... (chance to pull the gun trigger on a decision when aligned)
+    "aim_easy": 3.0, "aim_medium": 2.0, "aim_hard": 1.1, "aim_expert": 0.9,
 }
 
 DIFF = {
@@ -46,6 +51,7 @@ DIFF = {
     "hard":   (1.1, 0.25, 0.9, 1.0),
     "expert": (0.9, 0.15, 1.0, 1.1),
 }
+DIFF_RANK = {"easy": 0, "medium": 1, "hard": 2, "expert": 3}
 PRACTICE_MIX = ["easy"] * 4 + ["medium"] * 4 + ["hard"] * 4 + ["expert"] * 3
 
 UPGRADE_PREF = ["plating", "armor", "nanites", "gun_rate", "gun_damage", "laser_damage", "laser_charge",
@@ -67,6 +73,8 @@ class HouseBot:
         self.m = mech
         self.diff = diff
         self.aim_mult, self.react_s, self.fire_p, self.aggr = DIFF[diff]
+        self.aim_mult = squad.p.get("aim_" + diff, self.aim_mult)
+        self.fire_p = squad.p.get("firep_" + diff, self.fire_p)
         self.react_s *= squad.p["react"]
         r = squad.M.crng
         self.rng = r
@@ -92,21 +100,26 @@ class HouseBot:
     def on_damaged(self, src, amount, weapon):
         if isinstance(src, Mech):
             self.hit_by[src.id] = self.sq.M.t
+        elif src is not None and getattr(src, "kind", None) == "npc":
+            # a drone shooting us: shoot back (house bots almost never die to drones in live replays)
+            self.farm_target = src
+            self.farm_until = self.sq.M.t + 10
+            self.npc_hit_t = self.sq.M.t
 
     def on_death(self):
         self.sq.on_house_death(self)
 
     # ------------------------------------------------------------ helpers
-    def _aim_noise(self, dist):
+    def _aim_noise(self, dist, mult=1.0):
         p = self.sq.p
-        sig = self.aim_mult * (p["aim_a"] + p["aim_b"] * dist)
+        sig = mult * self.aim_mult * (p["aim_a"] + p["aim_b"] * dist)
         rho = p["aim_rho"]
         k = math.sqrt(max(0.0, 1 - rho * rho))
         self.ex = rho * self.ex + k * self.rng.gauss(0, sig)
         self.ey = rho * self.ey + k * self.rng.gauss(0, sig * 0.5)
         return self.ex, self.ey
 
-    def _aim_at(self, tx, ty, tz, vx, vy, vz, speed, noisy=True):
+    def _aim_at(self, tx, ty, tz, vx, vy, vz, speed, noisy=True, mult=1.0):
         m = self.m
         sx, sy, sz = m.x, m.y, m.z + m.stats["muzzle_height"]
         px, py, pz, d = _lead(sx, sy, sz, tx, ty, tz, vx, vy, vz, speed)
@@ -114,7 +127,7 @@ class HouseBot:
         hd = math.hypot(px - sx, py - sy)
         pitch = math.atan2(pz - sz, hd)
         if noisy:
-            ex, ey = self._aim_noise(d)
+            ex, ey = self._aim_noise(d, mult)
             yaw += ex / max(hd, 1.0)
             pitch += ey / max(hd, 1.0)
         return yaw, pitch, d
@@ -230,6 +243,7 @@ class HouseBot:
         """Roamers: grab nearby weapons / cubes, break crates, shoot drones. Returns move or None."""
         M = self.sq.M
         m = self.m
+        p = self.sq.p
         t = M.t
         # weapon loot when slot 1 empty
         if m.weapons[1] is None:
@@ -273,7 +287,7 @@ class HouseBot:
             else:
                 tx, ty, tz, vx, vy = ft.x, ft.y, ft.z + 1.7, ft.vx, ft.vy
             gun = m.wstats["gun"]
-            yaw, pitch, d = self._aim_at(tx, ty, tz, vx, vy, 0.0, gun["speed"])
+            yaw, pitch, d = self._aim_at(tx, ty, tz, vx, vy, 0.0, gun["speed"], mult=p["farm_aim"])
             act["aim"] = [yaw, pitch]
             if abs(wrap(yaw - m.yaw)) < 0.08 and d < 120:
                 fire = [False, False]
@@ -316,6 +330,9 @@ class HouseBot:
             self._release_laser(act)
             if zg is not None:
                 mv = self._move_toward(*zg)
+            elif self.farm_target is not None and not isinstance(self.farm_target, dict) and \
+                    t - getattr(self, "npc_hit_t", -1e9) < 4 and self.farm_target.alive:
+                mv = self._farm(act)
             elif self.hunter and target is not None:
                 if p["omniscient"] or know:
                     gx, gy = target.x, target.y
@@ -389,7 +406,8 @@ class HouseBot:
         for slot, w in enumerate(m.weapons):
             if w is not None and w.kind == "laser":
                 if w.charging:
-                    fire[slot] = w.charge < p["laser_release"] - 1e-6
+                    # the release applies on the next tick: let go one decision early so it fires at laser_release
+                    fire[slot] = w.charge < p["laser_release"] - 0.1 - 1e-6
                 elif ready and own_los and dist < 220 and w.cooldown <= 0:
                     fire[slot] = True
         # movement: strafe + radial
@@ -498,11 +516,17 @@ class Squad:
             nh = self._n_hunters(len(bots))
             cur = [b for b in bots if b.hunter]
             if len(cur) > nh:
-                cur.sort(key=lambda b: (b.m.x - tx) ** 2 + (b.m.y - ty) ** 2)
+                cur.sort(key=lambda b: (DIFF_RANK[b.diff], (b.m.x - tx) ** 2 + (b.m.y - ty) ** 2) if self.p["hunt_order"]
+                         else (b.m.x - tx) ** 2 + (b.m.y - ty) ** 2)
                 for b in cur[nh:]:
                     b.hunter = False
             elif len(cur) < nh:
-                rest = sorted([b for b in bots if not b.hunter], key=lambda b: (b.m.x - tx) ** 2 + (b.m.y - ty) ** 2)
+                if p_order := self.p["hunt_order"]:
+                    # 1 = weakest difficulty joins the hunt first (easy, medium, hard, expert), nearest within a tier
+                    key = lambda b: (DIFF_RANK[b.diff], (b.m.x - tx) ** 2 + (b.m.y - ty) ** 2)
+                else:
+                    key = lambda b: (b.m.x - tx) ** 2 + (b.m.y - ty) ** 2
+                rest = sorted([b for b in bots if not b.hunter], key=key)
                 for b in rest[:nh - len(cur)]:
                     b.hunter = True
         for b in bots:
