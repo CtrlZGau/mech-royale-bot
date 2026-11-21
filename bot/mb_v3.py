@@ -21,6 +21,9 @@ Flags (env MB_FLAGS="anchor,aggro3" or the DEFAULT_FLAGS set below for the submi
   MB_P env: "name=value,..." overrides any threshold attribute (tuning).
   focus   : finish kills: target score weights enemy HP 0.08/HP (mechbot 0.03), stickiness 6 s / -90 (3 s / -45).
   npcsafe : farm drones only above 92% HP and within 90 m (mechbot 75%, 130 m); drones killed mechbot in 12/96 sim matches.
+  dualaim : while the laser charges (< 85%), aim with the gun's lead so the gun keeps firing; laser aim for release.
+  laserclose: laser does not take over the torso inside 35 m (62% laser hit rate there in the sim).
+  laserlong: laser drives the torso beyond 110 m even on cooldown (gun hit rate 75% at 120-160 m, 15% beyond).
   aggro   : any phase: fight a visible mech within 100 m while HP > 75% and no other mech within 160 m.
 """
 import math
@@ -32,7 +35,7 @@ from mb_bot import TimedBot, dist2, unit, wrap
 
 PI = math.pi
 TAU = 2 * PI
-DEFAULT_FLAGS = set()
+DEFAULT_FLAGS = {"focus", "npcsafe"}  # submitted default (sim A/B +0.42 vs mechbot, CI +0.23..+0.60)
 _env = os.environ.get("MB_FLAGS")
 FLAGS = set(x.strip() for x in _env.split(",") if x.strip()) if _env is not None else set(DEFAULT_FLAGS)
 
@@ -462,8 +465,10 @@ class V3Bot(TimedBot):
         l_energy = lw["stats"].get("energy", 3) if lw else 0
         if lw and d < lw["stats"].get("range", 45) * 0.92 and me["energy"] > l_energy + 4 and los:
             primary = "lightning"
-        elif laser and (laser.get("charge", 0) > 0 or laser["cooldown"] < (1.2 if self.laser_pref else 0.5)) \
-                and d < laser["stats"].get("range", 280) * 0.95 and (los or laser.get("charge", 0) > 0):
+        elif laser and (laser.get("charge", 0) > 0 or laser["cooldown"] < (1.2 if self.laser_pref else 0.5)
+                        or ("laserlong" in self.flags and d > 110)) \
+                and d < laser["stats"].get("range", 280) * 0.95 and (los or laser.get("charge", 0) > 0) \
+                and not ("laserclose" in self.flags and d < 35 and laser.get("charge", 0) == 0):
             primary = "laser"
         elif gun and gun.get("reload", 0) == 0 and gun.get("ammo", 1) > 0 and d < gun["stats"].get("range", 230) and los:
             primary = "gun"
@@ -480,6 +485,10 @@ class V3Bot(TimedBot):
             aim = self.mortar_aim(mortar, tp, tv, los) or direct()
         elif primary == "laser":
             aim = direct(0.1)
+            if "dualaim" in self.flags and gun_aim is not None and laser is not None \
+                    and laser.get("charge", 0) < laser["stats"].get("charge", 0.75) * 0.85 \
+                    and gun is not None and gun.get("reload", 0) == 0 and gun.get("ammo", 1) > 0:
+                aim = gun_aim  # keep the gun firing while the laser charges; switch to laser aim at the end
         else:
             aim = direct()
 
