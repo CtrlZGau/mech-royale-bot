@@ -12,6 +12,7 @@ Each decision: memory -> upgrade -> threat picture & target -> zone timing -> mo
 Uses mb_bot.TimedBot only as the world/planner/cover/mortar-dodge layer (bot/mb_bot.py is unchanged).
 """
 import math
+import os
 import time
 
 import mechfight as mf
@@ -49,6 +50,12 @@ SLOT_VALUE = {"laser": 4, "lightning": 3, "mortar": 0}  # mortar never wanted (l
 SLOT_VALUE_PLAIN = {"lightning": 3, "laser": 2, "mortar": 0}
 OTHERS_DEAD_TICKS = 5  # decisions in a row with a death we did not cause -> Guard for the rest of the match
 
+# Global switches/numbers (defaults = the practice version). Tunable for experiments via the WD_P env:
+#   WD_P="g.scout_s=10,g.guard=0,hunt.finish_r=20,scout.loot_r=200"  (prefix g. = global, else a phase)
+GLOBAL = dict(scout_s=SCOUT_S, guard=0, others_dead_ticks=OTHERS_DEAD_TICKS, back_s=1.5, lose_two_hp=0.55,
+              lose_three_hp=0.8, lose_low_hp=0.35, closing_v=3.0, closing_r=180.0, weak_frac=0.4, weak_r=160.0,
+              aimed_r=190.0, struck_s=6.0, lethal=1, sidestep=1, drops=1, drone_farm=1, crate_farm=1, cube_v=75.0)
+
 
 class WardenBot(TimedBot):
     name = "warden"
@@ -56,7 +63,17 @@ class WardenBot(TimedBot):
     def __init__(self, hello):
         super().__init__(hello)
         self.name = "warden"
-        self.k = dict(SCOUT)
+        self.g = dict(GLOBAL)
+        self.prof = {"scout": dict(SCOUT), "hunt": dict(HUNT), "guard": dict(GUARD)}
+        for kv in (os.environ.get("WD_P") or "").split(","):
+            if "=" not in kv:
+                continue
+            key, val = kv.split("=", 1)
+            sect, _, name = key.strip().partition(".")
+            book = self.g if sect == "g" else self.prof.get(sect)
+            if book is not None and name in book:
+                book[name] = type(book[name])(float(val)) if not isinstance(book[name], bool) else bool(float(val))
+        self.k = dict(self.prof["scout"])
         self.phase = "scout"
         self.items = {"crate": {}, "cube": {}, "pickup": {}}  # id -> {"pos", "t"}
         self.drones = {}                                     # id -> obs dict + "t"
@@ -162,12 +179,12 @@ class WardenBot(TimedBot):
             self.others_dead_ticks += 1
         else:
             self.others_dead_ticks = 0
-        if self.others_dead_ticks >= OTHERS_DEAD_TICKS:
+        if self.g["guard"] and self.others_dead_ticks >= self.g["others_dead_ticks"]:
             self.guard = True
-        want = "guard" if self.guard else ("hunt" if t > SCOUT_S else "scout")
+        want = "guard" if self.guard else ("hunt" if t > self.g["scout_s"] else "scout")
         if want != self.phase:
             self.phase = want
-            self.k = dict(HUNT if want == "hunt" else GUARD if want == "guard" else SCOUT)
+            self.k = dict(self.prof[want])
 
     # ================================================================== zone timing
     def zone_hold(self, z, t):
@@ -238,8 +255,10 @@ class WardenBot(TimedBot):
             closing = self.approach_speed(e)
             struck = self.struck_ago(e["id"])
             if self.phase == "hunt":
-                hot = (d < K["fight_close"] or struck < 6 or endgame or (closing > 3 and d < 180)
-                       or (hp < 0.4 * mhp and d < 160) or (aimed and d < 190))
+                G = self.g
+                hot = (d < K["fight_close"] or struck < G["struck_s"] or endgame
+                       or (closing > G["closing_v"] and d < G["closing_r"])
+                       or (hp < G["weak_frac"] * mhp and d < G["weak_r"]) or (aimed and d < G["aimed_r"]))
             else:
                 hot = (d < K["fight_close"] or struck < 4 or (aimed and e.get("charging") and d < 120)
                        or (hp < 350 and d < 120) or obs["alive"] <= 2)
@@ -584,21 +603,22 @@ class WardenBot(TimedBot):
                     v = max(v, 150.0)
                 offer("pickup", iid, p["pos"], v)
         capped = self.me["cubes"] >= self.cfg["cubes"].get("stat_cap", 10)
-        cube_v = 25.0 if capped else 75.0
+        cube_v = 25.0 if capped else self.g["cube_v"]
         for iid, cb in self.items["cube"].items():
             if dist2(cb["pos"], self.pos) < max(60.0, K["loot_r"] * 0.7):
                 offer("cube", iid, cb["pos"], cube_v)
         if hpf > K["farm_hp"] and not danger and t < K.get("crate_until", 1e9):
-            for iid, cr in self.items["crate"].items():
+            for iid, cr in (self.items["crate"].items() if self.g["crate_farm"] else ()):
                 if dist2(cr["pos"], self.pos) < K["loot_r"]:
                     offer("crate", iid, cr["pos"], cube_v * 0.6)
-            if not capped:
+            if not capped and self.g["drone_farm"]:
                 for iid, dr in self.drones.items():
                     if t - dr["t"] < 12 and dist2(dr["pos"], self.pos) < K["loot_r"]:
                         offer("drone", iid, dr["pos"], 85.0)
         for d in obs.get("drops", []):
             if not danger and dist2(d["pos"], self.pos) / walk < d.get("lands_in", 0) + 25 and self.drop_ok(obs, d):
-                offer("drop", d["id"], d["pos"], 260.0)
+                if self.g["drops"]:
+                    offer("drop", d["id"], d["pos"], 260.0)
         if best is None:
             self.chase = None
             return None
@@ -643,16 +663,16 @@ class WardenBot(TimedBot):
         # ---- when to back off
         if self.phase == "hunt":
             near = sum(1 for e in vis if e["t"] == t and e.get("_d", 999) < 160)
-            losing = (near >= 2 and hpf < 0.55) or (near >= 3 and hpf < 0.8)
+            losing = (near >= 2 and hpf < self.g["lose_two_hp"]) or (near >= 3 and hpf < self.g["lose_three_hp"])
             if target is not None:
                 tf = target.get("hp", 1400) / max(target.get("max_hp", 1400), 1)
-                if hpf < 0.35 and tf > hpf + 0.1:
+                if hpf < self.g["lose_low_hp"] and tf > hpf + 0.1:
                     losing = True
                 if tf < 0.25 and hpf > 0.2 and near <= 2:
                     losing = False
             if losing:
                 self.lost_at = t
-            self.backing = self.lost_at > 0 and t - self.lost_at < 1.5
+            self.backing = self.lost_at > 0 and t - self.lost_at < self.g["back_s"]
         else:
             outgunned = target is not None and "laser" in (target.get("weapons") or []) and laser is None \
                 and target["_d"] > 55 and hpf < 0.8
@@ -772,7 +792,7 @@ class WardenBot(TimedBot):
                         move = (move[0] * q, move[1] * q)
 
         # ---- dodges and stuck recovery
-        dx, dy, las = self.sidestep(obs)
+        dx, dy, las = self.sidestep(obs) if self.g["sidestep"] else (0.0, 0.0, False)
         if dx or dy:
             mx, my = move[0] * 0.4 + dx * 0.9, move[1] * 0.4 + dy * 0.9
             L = math.hypot(mx, my)
@@ -929,7 +949,7 @@ class WardenBot(TimedBot):
                 full = ws.get("charge", 0.75)
                 ch = w.get("charge", 0)
                 # release early if a partial charge already kills
-                if ch >= ws.get("min_charge", 0.15) and ch < full - 0.051:
+                if self.g["lethal"] and ch >= ws.get("min_charge", 0.15) and ch < full - 0.051:
                     dmg = ws.get("damage", 315) * (ws.get("min_frac", 0.35) + (1 - ws.get("min_frac", 0.35)) * ch / full)
                     dmg *= 1 + self.cfg["cubes"].get("damage_per_cube", 0.04) * min(me["cubes"], self.cfg["cubes"].get("stat_cap", 10))
                     if "mortar" in (target.get("weapons") or []):
