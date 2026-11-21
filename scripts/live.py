@@ -65,6 +65,19 @@ async def main():
     log(f"recording to {rec_path}")
 
     url = f"wss://{HOST}/r/{room}/play?token=&sid={sid}&name={a.name}&code={code}"
+    live_url = f"wss://{HOST}/r/{room}/live?token=&code={code}&sid={sid}"
+    replay_path = rec_path.replace("live-", "replay-")
+    replay_task = None
+
+    async def record_replay():
+        """Spectator stream = full god-view replay (mechreplay/1). Saved for the 3D viewer."""
+        try:
+            async with websockets.connect(live_url, max_size=None, user_agent_header="mech-bot-bridge") as lv:
+                with open(replay_path, "w", buffering=1) as f:
+                    async for raw in lv:
+                        f.write(str(raw).rstrip("\n") + "\n")
+        except Exception as e:
+            log(f"replay stream ended: {e!r}")
     played = 0
     bot = None
     stats = {"obs": 0, "acts": 0, "lat": []}
@@ -132,6 +145,9 @@ async def main():
                     await bot.stdin.drain()
                     await ws.send(json.dumps({"type": "loaded"}))
                     log(f"hello: slot {msg['slot']}; bot started; sent loaded")
+                    if replay_task is None:
+                        replay_task = asyncio.ensure_future(record_replay())
+                        log(f"recording replay to {replay_path}")
                 elif kind == "obs":
                     stats["obs"] += 1
                     if bot and bot.returncode is None:
@@ -159,6 +175,10 @@ async def main():
                     log("results:", json.dumps(rows)[:1500])
                     if played >= a.matches:
                         rec.close()
+                        await asyncio.sleep(6)  # let the spectator stream (delayed) catch up
+                        if replay_task:
+                            replay_task.cancel()
+                        log(f"view it: python3 scripts/view.py {os.path.relpath(replay_path, ROOT)}")
                         return
 
 
