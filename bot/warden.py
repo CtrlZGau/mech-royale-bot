@@ -28,6 +28,11 @@ SCOUT_S = 20.0
 SCOUT = dict(fight_close=60.0, max_range=215.0, hp_weight=60.0 / 1400, wounded_bonus=0.0, keep_bonus=0.0,
              pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=85.0,
              loot_r=150.0, laser_r=240.0, farm_hp=0.7, cube_fight_r=0.0, finish_r=0.0, laser_ups=False, peek=True)
+# Guard: the cautious default once the match is clearly not a pure squad hunt (someone else died)
+GUARD = dict(fight_close=60.0, max_range=215.0, hp_weight=60.0 / 1400, wounded_bonus=0.0, keep_bonus=0.0,
+             pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=85.0,
+             loot_r=90.0, laser_r=90.0, farm_hp=0.7, cube_fight_r=0.0, finish_r=0.0, laser_ups=False, peek=True,
+             crate_until=150.0, laser_first=False)
 HUNT = dict(fight_close=60.0, max_range=240.0, hp_weight=0.2, wounded_bonus=100.0, keep_bonus=120.0,
             pull_hp=0.38, steady_hp=0.8, pref_gun=85.0, pref_light=28.0, pref_laser=140.0,
             loot_r=150.0, laser_r=240.0, farm_hp=0.5, cube_fight_r=70.0, finish_r=14.0, laser_ups=True, peek=False)
@@ -40,7 +45,9 @@ UPG_LASERLINE = ["plating", "armor", "laser_damage", "laser_charge", "nanites", 
                  "lightning_efficiency", "lightning_range", "servos", "gun_mag", "gun_velocity", "gyros",
                  "lightning_chain", "reactor", "capacitor", "mortar_reload", "mortar_splash", "mortar_velocity",
                  "sensors", "jets", "laser_pierce"]
-SLOT_VALUE = {"laser": 4, "lightning": 3, "mortar": 0}  # mortar never wanted
+SLOT_VALUE = {"laser": 4, "lightning": 3, "mortar": 0}  # mortar never wanted (laser-first)
+SLOT_VALUE_PLAIN = {"lightning": 3, "laser": 2, "mortar": 0}
+OTHERS_DEAD_TICKS = 5  # decisions in a row with a death we did not cause -> Guard for the rest of the match
 
 
 class WardenBot(TimedBot):
@@ -66,6 +73,8 @@ class WardenBot(TimedBot):
         self.post = None
         self.post_t = -99.0
         self.alive0 = None
+        self.others_dead_ticks = 0
+        self.guard = False
         self.cover_spot = None
         self.cover_ok = False
         self.cover_t = -99.0
@@ -149,10 +158,16 @@ class WardenBot(TimedBot):
                 self.my_kills += 1
         if self.alive0 is None:
             self.alive0 = obs["alive"]
-        want = "hunt" if t > SCOUT_S else "scout"
+        if self.alive0 - obs["alive"] - self.my_kills > 0:
+            self.others_dead_ticks += 1
+        else:
+            self.others_dead_ticks = 0
+        if self.others_dead_ticks >= OTHERS_DEAD_TICKS:
+            self.guard = True
+        want = "guard" if self.guard else ("hunt" if t > SCOUT_S else "scout")
         if want != self.phase:
             self.phase = want
-            self.k = dict(HUNT if want == "hunt" else SCOUT)
+            self.k = dict(HUNT if want == "hunt" else GUARD if want == "guard" else SCOUT)
 
     # ================================================================== zone timing
     def zone_hold(self, z, t):
@@ -511,10 +526,11 @@ class WardenBot(TimedBot):
     def wants_gear(self, kind):
         if kind == "gun":
             return self.me["weapons"][0] is None
-        if self.gear(kind)[0] >= 0 or SLOT_VALUE.get(kind, 0) <= 0:
+        vals = SLOT_VALUE_PLAIN if self.k.get("laser_first") is False else SLOT_VALUE
+        if self.gear(kind)[0] >= 0 or vals.get(kind, 0) <= 0:
             return False
         cur = self.me["weapons"][1]
-        return SLOT_VALUE.get(kind, 0) > (SLOT_VALUE.get(cur["kind"], 0) if cur else 0)
+        return vals.get(kind, 0) > (vals.get(cur["kind"], 0) if cur else 0)
 
     def drop_ok(self, obs, d):
         me = self.me
@@ -564,7 +580,7 @@ class WardenBot(TimedBot):
             rad = K["laser_r"] if p.get("kind") == "laser" else K["loot_r"]
             if dist2(p["pos"], self.pos) < rad:
                 v = 130.0 if self.me["weapons"][1] is None else 60.0
-                if p.get("kind") == "laser":
+                if p.get("kind") == "laser" and K.get("laser_first", True):
                     v = max(v, 150.0)
                 offer("pickup", iid, p["pos"], v)
         capped = self.me["cubes"] >= self.cfg["cubes"].get("stat_cap", 10)
@@ -572,7 +588,7 @@ class WardenBot(TimedBot):
         for iid, cb in self.items["cube"].items():
             if dist2(cb["pos"], self.pos) < max(60.0, K["loot_r"] * 0.7):
                 offer("cube", iid, cb["pos"], cube_v)
-        if hpf > K["farm_hp"] and not danger:
+        if hpf > K["farm_hp"] and not danger and t < K.get("crate_until", 1e9):
             for iid, cr in self.items["crate"].items():
                 if dist2(cr["pos"], self.pos) < K["loot_r"]:
                     offer("crate", iid, cr["pos"], cube_v * 0.6)
@@ -677,7 +693,7 @@ class WardenBot(TimedBot):
                 if t - self.drone_hit_t < 3 and move == (0.0, 0.0):
                     s = 1.0 if (t % 3) < 1.5 else -1.0
                     move = (-math.sin(self.drone_bearing) * s, math.cos(self.drone_bearing) * s)
-        elif self.phase == "scout" and target is None and t - self.last_hit_t < 2.5 and not endgame \
+        elif self.phase in ("scout", "guard") and target is None and t - self.last_hit_t < 2.5 and not endgame \
                 and self.threat_bearing is not None:
             ghost = {"pos": [self.pos[0] + math.cos(self.threat_bearing[1]) * 80,
                              self.pos[1] + math.sin(self.threat_bearing[1]) * 80, self.pos[2]], "cubes": 0}
@@ -747,7 +763,7 @@ class WardenBot(TimedBot):
                         move = (0.0, 0.0)
             elif zd > 3 and (self.phase == "hunt" or z["next_radius"] <= 30):
                 move, mode = self.go(gx, gy), "zone-walk"
-            elif self.phase == "scout":
+            elif self.phase in ("scout", "guard"):
                 post = self.scout_post(obs)
                 if post is not None and dist2(post, self.pos) > 3:
                     move, mode = self.go(*post), "post"
