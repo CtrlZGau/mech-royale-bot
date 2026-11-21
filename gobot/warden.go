@@ -89,6 +89,7 @@ type Bot struct {
 	escFlying           bool
 	escT, escOffUntil   float64
 	escTrackOn          bool
+	recoverUntil        float64 // opening recovery: back off until this time
 	escTrack            [3]float64
 	mode                string
 
@@ -574,9 +575,15 @@ func (b *Bot) keepRange(m *Actor, override float64) float64 {
 // brawlStep: the best nearby spot to fight from (hold range, keep or break line of fire, strafe, stay out
 // of other enemies' sight, stay in the zone, drift toward cubes).
 func (b *Bot) brawlStep(obs *Obs, foe *Actor, vis []*Seen, wantSight, override float64) Vec2 {
+	return b.brawlStepAway(obs, foe, vis, wantSight, override, 0)
+}
+
+// brawlStepAway: brawlStep that keeps at least minRange from the foe and, when minRange is set, avoids spots the
+// foe's eye can see (used to withdraw from a lost exchange).
+func (b *Bot) brawlStepAway(obs *Obs, foe *Actor, vis []*Seen, wantSight, override, minRange float64) Vec2 {
 	L := b.L
 	x, y := b.pos[0], b.pos[1]
-	rp := b.keepRange(foe, override)
+	rp := math.Max(b.keepRange(foe, override), minRange)
 	bx, by := foe.Pos[0]-x, foe.Pos[1]-y
 	bd := math.Hypot(bx, by) + 1e-9
 	ux, uy := bx/bd, by/bd
@@ -636,6 +643,13 @@ func (b *Bot) brawlStep(obs *Obs, foe *Actor, vis []*Seen, wantSight, override f
 			}
 		}
 		torso := Vec3{cx, cy, cz + bodyH}
+		if minRange > 0 {
+			foeEye := b.eyeOf(foe)
+			tall := b.st("height", 9) * b.scale(b.me.Cubes)
+			if L.FireLane(foeEye, Vec3{cx, cy, cz + tall*0.55}) || L.FireLane(foeEye, Vec3{cx, cy, cz + tall*0.88}) {
+				sc -= 45
+			}
+		}
 		for _, e := range vis {
 			if &e.Actor == foe || math.Hypot(e.Pos[0]-cx, e.Pos[1]-cy) > 170 {
 				continue
@@ -1219,6 +1233,22 @@ func (b *Bot) Act(obs *Obs) Action {
 	zoneNow := !me.InZone || t+need+3 >= leaveBy
 	zoneSoon := t+need+14 >= leaveBy
 
+	// ---- opening recovery (switch): after losing an exchange early on, back off for a while
+	if b.g["open_recover"] != 0 {
+		if finishing || endgame || !me.InZone || zoneSoon || hpf >= 0.8 {
+			b.recoverUntil = 0
+		} else if t < 60 && target != nil && b.struckAgo(target.ID) < 1.5 && target.maxHP() > 0 {
+			tfrac := target.hp() / target.maxHP()
+			losingTrade := target.hp() > 1.15*me.HP && tfrac > hpf+0.12
+			gunOnly := gun != nil && len(me.Weapons) > 1 && me.Weapons[0] == gun && me.Weapons[1] == nil
+			armedFoe := target.carries("laser") || target.carries("lightning") || target.carries("mortar")
+			if losingTrade || (gunOnly && armedFoe && target.hp() >= 0.9*me.HP) {
+				b.recoverUntil = t + 5.5
+			}
+		}
+	}
+	recovering := t < b.recoverUntil
+
 	move := Vec2{}
 	boost := false
 	mode := "idle"
@@ -1240,12 +1270,19 @@ func (b *Bot) Act(obs *Obs) Action {
 	} else if zoneNow && zd > 2 {
 		move, mode = b.goTo(gx, gy), "zone"
 		boost = (!me.InZone || t+need >= leaveBy) && me.Energy > 5
-	} else if b.backing && !finishing && !endgame {
+	} else if recovering || (b.backing && !finishing && !endgame) {
 		if mv, ok := b.takeCover(vis); ok {
 			move, mode = mv, "cover"
 			boost = me.Energy > 10 && moving(mv)
+		} else if target != nil && recovering {
+			// no cover route: break the line of sight locally, further away, without pushing back into fire
+			move = b.brawlStepAway(obs, &target.Actor, vis, -1.6, 0, target.d+20)
+			boost = me.Grounded && me.Energy > 0.3*me.MaxEnergy
+			mode = "withdraw"
 		} else if target != nil {
 			move, mode = b.brawlStep(obs, &target.Actor, vis, 1, 0), "cornered"
+		} else if recovering && len(vis) == 0 {
+			mode = "recover"
 		} else {
 			move, mode = b.goTo(gx, gy), "flee"
 			if t-b.droneHitT < 3 && !moving(move) {
