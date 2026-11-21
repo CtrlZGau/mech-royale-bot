@@ -1,5 +1,6 @@
 """Entry point. POLICY picks what runs in the submitted image; MECH_POLICY env overrides it locally.
 
+  wd   WardenBot (warden.py): Scout -> Hunt squad-hunter policy
   v3   V3Bot (mb_v3.py): mechbot 4.10 + experiment flags (MB_FLAGS=anchor,aggro3,dodge2,nofarm)
   mbe  EvadeBot (mb_evade.py): mechbot 4.10 + our V2 evade/stealth (fight only when engaged,
        max distance from every known mech inside the zone)  <- default
@@ -15,12 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mechfight as mf  # noqa: E402
 
-POLICY = "v3"
+POLICY = "wd"
 
 
 def policy_class(name=None):
     name = (name or os.environ.get("MECH_POLICY") or POLICY).lower()
-    if name == "v3":
+    if name == "wd":
+        from warden import WardenBot as P
+    elif name == "v3":
         from mb_v3 import V3Bot as P
     elif name == "mbe":
         from mb_evade import EvadeBot as P
