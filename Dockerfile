@@ -10,5 +10,6 @@ FROM scratch
 COPY --from=build /out/warden /bot/warden
 # Hunt tuning: early laser release at 70 % of a lethal partial charge, target HP weight 0.18; give up a pocket
 # escape whose walk to the takeoff stops making progress (remove for defaults).
-ENV WD_P="g.lethal_k=0.7,hunt.hp_weight=0.18,g.esc_guard=1"
+# Cubes valued at 100 (default 75) when choosing loot.
+ENV WD_P="g.lethal_k=0.7,hunt.hp_weight=0.18,g.esc_guard=1,g.cube_v=100"
 ENTRYPOINT ["/bot/warden"]
