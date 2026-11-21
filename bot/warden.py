@@ -18,6 +18,7 @@ import time
 import mechfight as mf
 from mb_bot import TimedBot, dist2, unit, wrap
 from mb_world import NB
+from terra import HOPS, Terra
 
 PI = math.pi
 TAU = 2 * PI
@@ -64,135 +65,7 @@ GLOBAL = dict(scout_s=SCOUT_S, guard=0, others_dead_ticks=OTHERS_DEAD_TICKS, bac
               parity=0)
 # parity=1 switches the engine-level behaviours to the reference implementation's rules: their stuck
 # recovery, mortar-shell dodge, path following, escape from isolated pockets, wall-clearance penalty,
-# skyline_reach-based waiting spot (40 candidates), main-area loot filter, latency-free line-of-fire check.
-
-
-class FloorMap:
-    """Walkable-area helpers on the 2 m map grid (used when parity=1):
-    blocked  - cells a mech should not stand on: impassable, touching a wall (within ~the mech radius), or a roof
-    comp     - connected walkable areas; `main` is the largest one
-    clear    - metres to the nearest blocked cell (4-neighbour, capped at 20)
-    skyline_reach - mean free length of 24 horizontal rays at standing height + 7 m (0..1)"""
-
-    def __init__(self, w):
-        self.w = w
-        nx, ny = w.nx, w.ny
-        n = nx * ny
-        cost, H, G, prism = w.cost, w.H, w.G, w.prism
-        blocked = bytearray(n)
-        for c in range(n):
-            if cost[c] == 0 or cost[c] >= 4 or (prism[c] and H[c] - G[c] > 1.5):
-                blocked[c] = 1
-        self.nogo = blocked
-        comp = [-1] * n
-        sizes = []
-        nb8 = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
-        for s0 in range(n):
-            if blocked[s0] or comp[s0] >= 0:
-                continue
-            lab = len(sizes)
-            comp[s0] = lab
-            q = [s0]
-            k = 0
-            while k < len(q):
-                c = q[k]
-                k += 1
-                ci, cj = c % nx, c // nx
-                for di, dj in nb8:
-                    i2, j2 = ci + di, cj + dj
-                    if i2 < 0 or j2 < 0 or i2 >= nx or j2 >= ny:
-                        continue
-                    nb = j2 * nx + i2
-                    if blocked[nb] or comp[nb] >= 0 or not w.can_step(c, nb):
-                        continue
-                    if di and dj and (blocked[cj * nx + i2] or blocked[j2 * nx + ci]):
-                        continue
-                    comp[nb] = lab
-                    q.append(nb)
-            sizes.append(len(q))
-        self.region = comp
-        self.core = max(range(len(sizes)), key=lambda i: sizes[i]) if sizes else -1
-        clear = [1e9] * n
-        q = []
-        for c in range(n):
-            if blocked[c]:
-                clear[c] = 0.0
-                q.append(c)
-        k = 0
-        while k < len(q):
-            c = q[k]
-            k += 1
-            dnext = clear[c] + 2.0
-            if dnext > 20:
-                continue
-            ci, cj = c % nx, c // nx
-            for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                i2, j2 = ci + di, cj + dj
-                if 0 <= i2 < nx and 0 <= j2 < ny:
-                    nb = j2 * nx + i2
-                    if clear[nb] > dnext:
-                        clear[nb] = dnext
-                        q.append(nb)
-        self.wall_gap = [min(v, 20.0) for v in clear]
-
-    def closest_open_cell(self, x, y, rmax=6):
-        w = self.w
-        i0, j0 = w.cell(x, y)
-        nx, ny = w.nx, w.ny
-        c0 = j0 * nx + i0
-        if not self.nogo[c0]:
-            return c0
-        for r in range(1, rmax + 1):
-            for dj in range(-r, r + 1):
-                for di in ((-r, r) if abs(dj) != r else range(-r, r + 1)):
-                    i, j = i0 + di, j0 + dj
-                    if 0 <= i < nx and 0 <= j < ny and not self.nogo[j * nx + i]:
-                        return j * nx + i
-        return -1
-
-    def standable_core(self, x, y):
-        c = self.w.idx(x, y)
-        return not self.nogo[c] and self.region[c] == self.core
-
-    def near_core(self, x, y):
-        c = self.closest_open_cell(x, y)
-        return c >= 0 and self.region[c] == self.core
-
-    def closest_core_cell(self, x, y, rmax=60):
-        w = self.w
-        i0, j0 = w.cell(x, y)
-        nx, ny = w.nx, w.ny
-        for r in range(1, rmax + 1):
-            best = None
-            for dj in range(-r, r + 1):
-                for di in ((-r, r) if abs(dj) != r else range(-r, r + 1)):
-                    i, j = i0 + di, j0 + dj
-                    if 0 <= i < nx and 0 <= j < ny:
-                        c = j * nx + i
-                        if not self.nogo[c] and self.region[c] == self.core:
-                            dd = di * di + dj * dj
-                            if best is None or dd < best[0]:
-                                best = (dd, c)
-            if best:
-                return w.center(best[1])
-        return None
-
-    def skyline_reach(self, x, y):
-        w = self.w
-        H = w.H
-        z = w.height(x, y) + 7
-        total = 0.0
-        for k in range(24):
-            a = k * PI / 12
-            ca, sa = math.cos(a), math.sin(a)
-            d = 2.5
-            while d < 200:
-                px, py = x + ca * d, y + sa * d
-                if not w.in_bounds(px, py, 0) or H[w.idx(px, py)] > z:
-                    break
-                d += 2.5
-            total += d
-        return total / (24 * 200)
+# airiness-based waiting spot (40 candidates), hub-only loot, exact line of fire (bot/terra.py).
 
 
 class WardenBot(TimedBot):
@@ -241,13 +114,22 @@ class WardenBot(TimedBot):
         self.unstuck_dir = (0.0, 0.0)
         self.wpath, self.wpath_goal, self.wpath_t, self.wpath_i = None, None, -99.0, 0
         self.esc_land, self.esc_flying, self.esc_t = None, False, -99.0
+        self.esc_from = None
+        self.esc_off_until = -1.0
+        self.esc_track = None
+        self.route_pending = False
         self.post_job = None
         self.par = bool(self.g["parity"])
-        self.grid = None
-        if self.par and self.world is not None:
-            t0 = time.perf_counter()
-            self.grid = FloorMap(self.world)
-            mf.log(f"parity grid built in {time.perf_counter() - t0:.2f}s")
+        self.grid = None   # kept for the plain path (always None)
+        self.T = None
+        if self.par:
+            try:
+                here = os.path.dirname(os.path.abspath(__file__))
+                self.T = Terra(hello["map"]["dir"], os.path.join(here, "terra_grid.bin"))
+                mf.log(f"terra ready in {self.T.build_s:.2f}s (cached grid: {self.T.grid_from_cache})")
+            except Exception as e:
+                mf.log(f"terra failed: {e!r}; parity off")
+                self.par = False
         mf.log("policy warden" + (" (parity)" if self.par else ""))
 
     # ================================================================== helpers
@@ -267,7 +149,24 @@ class WardenBot(TimedBot):
         return [self.pos[0] + me["vel"][0] * LATENCY, self.pos[1] + me["vel"][1] * LATENCY,
                 self.pos[2] + me["stats"].get("muzzle_height", 7)]
 
+    def lane(self, a, b):
+        if self.par:
+            return self.T.fire_lane(a, b)
+        return self.world.los(a, b)
+
+    def plain_muzzle(self):
+        return [self.pos[0], self.pos[1], self.pos[2] + self.me["stats"].get("muzzle_height", 7)]
+
     def clear_shot(self, m):
+        if self.par:
+            mz = self.plain_muzzle()
+            if self.T.fire_lane(mz, self.body_center(m)):
+                return True
+            if m.get("kind") == "mech":
+                top = [m["pos"][0], m["pos"][1],
+                       m["pos"][2] + self.cfg["mech"]["height"] * self.scale(m.get("cubes", 0)) * 0.85]
+                return self.T.fire_lane(mz, top)
+            return False
         if self.world is None:
             return True
         mz = self.muzzle() if not self.par else [self.pos[0], self.pos[1], self.pos[2] + self.me["stats"].get("muzzle_height", 7)]
@@ -312,8 +211,8 @@ class WardenBot(TimedBot):
                 e = book[iid]
                 if e["t"] == t:
                     continue
-                if dist2(e["pos"], self.pos) < 40 and t - e["t"] > 0.35 and self.world is not None and \
-                        self.world.los(eye, [e["pos"][0], e["pos"][1], e["pos"][2] + 1.5]):
+                if dist2(e["pos"], self.pos) < 40 and t - e["t"] > 0.35 and (self.par or self.world is not None) and \
+                        self.lane(eye, [e["pos"][0], e["pos"][1], e["pos"][2] + 1.5]):
                     del book[iid]  # should be visible but isn't: gone
         for m in obs["mechs"]:
             if m["kind"] == "npc":
@@ -448,24 +347,29 @@ class WardenBot(TimedBot):
 
     # ================================================================== movement pieces
     def go(self, gx, gy):
-        if not self.par or self.world is None:
+        if not self.par:
             return self.navigate((gx, gy))
-        w = self.world
+        T = self.T
         x, y = self.pos[0], self.pos[1]
         d = math.hypot(gx - x, gy - y)
         if d < 0.8:
             return (0.0, 0.0)
-        if d < 45 and w.walk_clear(x, y, gx, gy):
+        if self.pos[2] - T.floor_z(x, y) > 3 and T.hindered[T.fine_idx(x, y)]:
             return unit(gx - x, gy - y)
-        pl = self.planner
-        if self.wpath is None or dist2(self.wpath_goal, (gx, gy)) > 5 or self.t - self.wpath_t > 2.5:
-            if not pl.active:
-                pl.start(x, y, gx, gy)
-                self.wpath_goal, self.wpath_t = (gx, gy), self.t
-        if pl.active:
+        if d < 45 and T.stroll_ok(x, y, gx, gy):
+            return unit(gx - x, gy - y)
+        if (self.wpath is None or self.wpath_goal is None or dist2(self.wpath_goal, (gx, gy)) > 5
+                or self.t - self.wpath_t > 2.5) and not T.route_busy():
+            T.route_begin(x, y, gx, gy, 22000)
+            self.wpath_goal, self.wpath_t = (gx, gy), self.t
+            self.route_pending = True
+        if getattr(self, "route_pending", False):
             budget = max(0.002, 0.015 - (time.perf_counter() - self._t0))
-            if pl.step(budget):
-                self.wpath, self.wpath_i = list(pl.path), 0
+            if T.route_step(budget):
+                cells = T.route_result()
+                self.wpath = [T.cell_xy(c) for c in cells] if cells else []
+                self.wpath_i = 0
+                self.route_pending = False
         path = self.wpath
         if not path:
             return unit(gx - x, gy - y)
@@ -480,8 +384,8 @@ class WardenBot(TimedBot):
             return unit(gx - x, gy - y)
         for i in range(min(bi + 14, len(path) - 1), bi, -1):
             px, py = path[i]
-            if w.walk_clear(x, y, px, py):
-                if i == len(path) - 1 and math.hypot(px - gx, py - gy) < 4 and w.walk_clear(x, y, gx, gy):
+            if T.stroll_ok(x, y, px, py):
+                if i == len(path) - 1 and math.hypot(px - gx, py - gy) < 4 and T.stroll_ok(x, y, gx, gy):
                     return unit(gx - x, gy - y)
                 return unit(px - x, py - y)
         if bi + 1 < len(path):
@@ -507,6 +411,89 @@ class WardenBot(TimedBot):
         return r
 
     def brawl_step(self, obs, foe, vis, want_sight, range_override=None):
+        if self.par:
+            return self.brawl_step_exact(obs, foe, vis, want_sight, range_override)
+        return self.brawl_step_grid(obs, foe, vis, want_sight, range_override)
+
+    def brawl_step_exact(self, obs, foe, vis, want_sight, range_override=None):
+        T = self.T
+        x, y = self.pos[0], self.pos[1]
+        if range_override:
+            keep = (self.k["pref_gun"], self.k["pref_light"], self.k["pref_laser"])
+            self.k["pref_gun"] = self.k["pref_light"] = self.k["pref_laser"] = range_override
+            rp = self.keep_range(foe)
+            self.k["pref_gun"], self.k["pref_light"], self.k["pref_laser"] = keep
+        else:
+            rp = self.keep_range(foe)
+        bx, by = foe["pos"][0] - x, foe["pos"][1] - y
+        bd = math.hypot(bx, by) + 1e-9
+        ux, uy = bx / bd, by / bd
+        if self.t >= self.side_until:
+            if self.rng.random() < 0.6:
+                self.side = -self.side
+            self.side_until = self.t + 0.3 + self.rng.random() * 0.7
+        sx, sy = -uy * self.side, ux * self.side
+        center = self.body_center(foe)
+        mh = self.me["stats"].get("muzzle_height", 7)
+        cube = None
+        for c in self.items["cube"].values():
+            dc = dist2(c["pos"], self.pos)
+            if dc < 40 and abs(c["pos"][2] - self.pos[2]) < 4 and (cube is None or dc < dist2(cube["pos"], self.pos)):
+                cube = c
+        rings = 2 if self.k.get("peek") else 1
+        best, mv = -1e18, (0.0, 0.0)
+        side_blocked = False
+        body_h = self.me["stats"].get("height", 9) * 0.6
+        for k in range(-1, 16 * rings):
+            if k < 0:
+                cx, cy, dx, dy, r = x, y, 0.0, 0.0, 0.0
+            else:
+                a = (k % 16) * PI / 8
+                r = 6.0 * (1 + k // 16)
+                dx, dy = math.cos(a), math.sin(a)
+                cx, cy = x + dx * r, y + dy * r
+                if not T.stroll_ok(x, y, cx, cy) or not T.open_at(cx, cy):
+                    if k < 16 and dx * sx + dy * sy > 0.9:
+                        side_blocked = True
+                    continue
+            cz = T.tread_z(cx, cy)
+            dd = math.hypot(foe["pos"][0] - cx, foe["pos"][1] - cy)
+            sc = -1.1 * abs(dd - rp) - r * 0.4
+            sight = T.fire_lane([cx, cy, cz + mh], center)
+            if sight:
+                sc += 45 * want_sight
+            if rings > 1 and 0 <= k < 16 and sight == (want_sight > 0):
+                for q in range(0, 16, 2):
+                    qx, qy = cx + math.cos(q * PI / 8) * 7, cy + math.sin(q * PI / 8) * 7
+                    if T.open_at(qx, qy) and T.fire_lane([qx, qy, T.tread_z(qx, qy) + mh], center) != sight:
+                        sc += 8
+                        break
+            torso = [cx, cy, cz + body_h]
+            for e in vis:
+                if e is foe or math.hypot(e["pos"][0] - cx, e["pos"][1] - cy) > 170:
+                    continue
+                if T.fire_lane(self.eye_of(e), torso):
+                    sc -= 30
+            sc -= self.zone_cost(obs["zone"], cx, cy)
+            if cube is not None:
+                sc += 1.5 * (dist2(cube["pos"], self.pos) - math.hypot(cube["pos"][0] - cx, cube["pos"][1] - cy))
+            cl = T.margin[T.cell_at(cx, cy)]
+            if cl < 4:
+                sc -= (4 - cl) * 2.5
+            if want_sight > 0:
+                sc += 9 * (dx * sx + dy * sy)
+            if k < 0:
+                sc -= 8
+                if want_sight < 0 and not sight:
+                    sc += 14
+            if sc > best:
+                best, mv = sc, (dx, dy)
+        if side_blocked:
+            self.side = -self.side
+            self.side_until = self.t + 0.5
+        return mv
+
+    def brawl_step_grid(self, obs, foe, vis, want_sight, range_override=None):
         """Pick the best nearby spot to fight from: hold range, keep (or break) line of fire, strafe,
         stay out of other enemies' sight, stay in the zone, drift toward cubes."""
         w = self.world
@@ -591,7 +578,82 @@ class WardenBot(TimedBot):
         return mv
 
     def take_cover(self, vis):
-        """Walk to the nearest standable_core cell hidden from the (up to 4) nearest threats, searching the
+        if self.par:
+            return self.take_cover_exact(vis)
+        return self.take_cover_grid(vis)
+
+    def take_cover_exact(self, vis):
+        T = self.T
+        threats = [e for e in vis if dist2(e["pos"], self.pos) < 230]
+        if not threats:
+            return None
+        if len(threats) > 4:
+            threats = sorted(threats, key=lambda e: dist2(e["pos"], self.pos))[:4]
+        if self.cover_ok and self.t - self.cover_t < 0.4 and self.cover_spot is not None:
+            return self.walk_to_cover()
+        self.cover_t = self.t
+        eyes = [self.eye_of(e) for e in threats]
+        mech_h = self.me["stats"].get("height", 9)
+        z = self.obs["zone"]
+
+        def concealed(cx, cy):
+            cz = T.tread_z(cx, cy)
+            for ey in eyes:
+                if T.fire_lane(ey, [cx, cy, cz + mech_h]) or T.fire_lane(ey, [cx, cy, cz + mech_h * 0.5]):
+                    return False
+            return True
+
+        x, y = self.pos[0], self.pos[1]
+        if concealed(x, y) and self.zone_cost(z, x, y) == 0:
+            self.cover_ok, self.cover_spot = True, (x, y)
+            return (0.0, 0.0)
+        s0 = T.open_near(T.cell_at(x, y))
+        if s0 < 0:
+            return None
+        cols, rows = T.cols, T.rows
+        depth = {s0: 0}
+        frontier = [s0]
+        head = 0
+        best_c, best_s = None, 1e18
+        looked = 0
+        t_end = time.perf_counter() + 0.012  # safety net only; the search normally ends on its own rules
+        while head < len(frontier) and looked < 350:
+            c = frontier[head]
+            head += 1
+            steps = depth[c]
+            if steps > 50 or (best_c is not None and steps * 2 > best_s + 30):
+                break
+            ci, cj = c % cols, c // cols
+            if (ci + cj) % 2 == 0 and steps > 0:
+                cx, cy = T.cell_xy(c)
+                looked += 1
+                if concealed(cx, cy):
+                    sc = steps * 2 + self.zone_cost(z, cx, cy)
+                    near = min(math.hypot(e["pos"][0] - cx, e["pos"][1] - cy) for e in threats)
+                    sc -= min(near, 80.0) * 0.25
+                    if sc < best_s:
+                        best_c, best_s = c, sc
+                if time.perf_counter() > t_end:
+                    break
+            for hi, (di, dj) in enumerate(HOPS):
+                i2, j2 = ci + di, cj + dj
+                if i2 < 0 or j2 < 0 or i2 >= cols or j2 >= rows:
+                    continue
+                nb = j2 * cols + i2
+                if nb in depth or not T.can_hop(c, nb, hi >= 4):
+                    continue
+                if hi >= 4 and (T.sealed[cj * cols + i2] or T.sealed[j2 * cols + ci]):
+                    continue
+                depth[nb] = steps + 1
+                frontier.append(nb)
+        if best_c is None:
+            self.cover_ok = False
+            return None
+        self.cover_ok, self.cover_spot = True, T.cell_xy(best_c)
+        return self.walk_to_cover()
+
+    def take_cover_grid(self, vis):
+        """Walk to the nearest reachable cell hidden from the (up to 4) nearest threats, searching the
         walkable grid outward (~100 m max, ~8 ms budget). Stay put if already hidden and zone-safe."""
         threats = sorted([e for e in vis if dist2(e["pos"], self.pos) < 230], key=lambda e: dist2(e["pos"], self.pos))[:4]
         if not threats:
@@ -723,7 +785,7 @@ class WardenBot(TimedBot):
         return seen / n if n else 1.0
 
     def scout_post(self, obs):
-        if self.par and self.grid is not None:
+        if self.par:
             return self.scout_post_matched(obs)
         return self.scout_post_basic(obs)
 
@@ -734,7 +796,7 @@ class WardenBot(TimedBot):
                     if self.t - e["t"] < 20)
         crowd += sum(max(0.0, 60 - dist2(d["pos"], (px, py))) / 60 for d in obs.get("drops", []))
         edge = math.hypot(px - nc[0], py - nc[1]) / max(30.0, nr)
-        return 120 * self.grid.skyline_reach(px, py) + 0.25 * dist2((px, py), self.pos) + 40 * crowd + 10 * edge
+        return 120 * self.T.airiness(px, py) + 0.25 * dist2((px, py), self.pos) + 40 * crowd + 10 * edge
 
     def scout_post_matched(self, obs):
         z = obs["zone"]
@@ -752,7 +814,7 @@ class WardenBot(TimedBot):
                 a = self.rng.uniform(0, TAU)
                 r = math.sqrt(self.rng.random()) * nr * 0.7
                 px, py = nc[0] + r * math.cos(a), nc[1] + r * math.sin(a)
-                if not self.world.in_bounds(px, py, 1) or not self.grid.standable_core(px, py):
+                if not self.T.inside(px, py) or not self.T.on_hub(px, py):
                     continue
                 c = self.post_price(obs, px, py)
                 if c < job["bc"]:
@@ -796,33 +858,47 @@ class WardenBot(TimedBot):
 
     # ================================================================== parity: escape, shell dodge
     def leave_pocket(self, me):
-        """Stranded in a walkable pocket cut off from the main area: wait for energy, then jump and jet
-        to the nearest main-area cell, boosting while below the surfaces ahead. -> (move, boost, jump) or None"""
-        g = self.grid
-        if g is None:
+        """Stranded in a walkable pocket cut off from the hub: walk to the takeoff cell, wait for energy, then
+        jump and jet to the landing cell, boosting while below the solid tops ahead. -> (move, boost, jump) or None"""
+        if not self.par:
             return None
+        T = self.T
         x, y, z = self.pos
-        w = self.world
+        jump = False
+        # safety net (not in the reference): an escape that makes no progress for 2 s is dropped for 5 s,
+        # so normal play (with stuck recovery) takes over instead of pushing into a slope forever
+        if self.t < self.esc_off_until:
+            return None
+        if self.esc_track is None or math.hypot(x - self.esc_track[1], y - self.esc_track[2]) > 1.5:
+            self.esc_track = (self.t, x, y)
+        elif self.esc_land is not None and self.t - self.esc_track[0] > 2.0:
+            self.esc_off_until = self.t + 5.0
+            self.esc_land, self.esc_flying, self.esc_track = None, False, None
+            return None
         if me["grounded"]:
-            if z - w.ground(x, y) > 3:
+            if z - T.floor_z(x, y) > 3 and T.hindered[T.fine_idx(x, y)]:
                 self.esc_land, self.esc_flying = None, False
                 return None
-            if g.near_core(x, y):
+            if not T.stray(x, y):
                 self.esc_land, self.esc_flying = None, False
                 return None
             self.esc_flying = False
             if self.esc_land is None or self.t - self.esc_t > 6:
-                self.esc_land, self.esc_t = g.closest_core_cell(x, y), self.t
-                if self.esc_land is None:
+                plan = T.breakout(x, y)
+                self.esc_t = self.t
+                if plan is None:
+                    self.esc_land = None
                     return None
+                self.esc_from, self.esc_land = plan
+            fx, fy = self.esc_from
+            if math.hypot(fx - x, fy - y) > 2.5:
+                return self.go(fx, fy), False, False
             if me["energy"] < min(70.0, me["max_energy"] * 0.7):
                 return (0.0, 0.0), False, False
             self.esc_flying = True
             jump = True
         elif not self.esc_flying or self.esc_land is None:
             return None
-        else:
-            jump = False
         lx, ly = self.esc_land
         d = math.hypot(lx - x, ly - y)
         if d < 1.5:
@@ -831,16 +907,16 @@ class WardenBot(TimedBot):
         need = -1e9
         tt = 0.0
         while tt <= min(d, 30.0):
-            need = max(need, w.height(x + mv[0] * tt, y + mv[1] * tt))
+            need = max(need, T.crest_z(x + mv[0] * tt, y + mv[1] * tt))
             tt += 1.0
         return mv, (z < need + 2.5 and me["energy"] > 1), jump
 
     def outrun_shell(self, obs):
         me = self.me
+        T = self.T
         mort = self.cfg["weapons"].get("mortar", {})
         g = mort.get("gravity", 22) or 22
         rad = mort.get("splash_radius", 7) + me["stats"].get("radius", 2.5) + 2
-        w = self.world
         for p in obs.get("projectiles", []):
             if p["kind"] != "mortar":
                 continue
@@ -852,7 +928,7 @@ class WardenBot(TimedBot):
                 py += p["vel"][1] * 0.05
                 pz += vz * 0.05
                 vz -= g * 0.05
-                if w is not None and (not w.in_bounds(px, py, 0) or pz <= w.height(px, py)):
+                if T.is_rock(px, py, pz):
                     d = math.hypot(px - self.pos[0], py - self.pos[1])
                     if d < rad and tt < 2.5:
                         dx, dy = self.pos[0] - px, self.pos[1] - py
@@ -863,7 +939,7 @@ class WardenBot(TimedBot):
                         for rot in (0.0, 0.7, -0.7, 1.4, -1.4):
                             c, s_ = math.cos(rot), math.sin(rot)
                             ex, ey = dx * c - dy * s_, dx * s_ + dy * c
-                            if w.walk_clear(self.pos[0], self.pos[1], self.pos[0] + ex * 6, self.pos[1] + ey * 6):
+                            if T.stroll_ok(self.pos[0], self.pos[1], self.pos[0] + ex * 6, self.pos[1] + ey * 6):
                                 return (ex, ey)
                     break
                 tt += 0.05
@@ -914,11 +990,13 @@ class WardenBot(TimedBot):
             if t + d * 1.4 / walk + 5 > self.must_leave_by(z, pos[0], pos[1], 6):
                 return
             if self.world is not None:
-                base = self.world.ground(pos[0], pos[1]) if self.par else self.world.height(pos[0], pos[1])
+                base = self.T.floor_z(pos[0], pos[1]) if self.par else self.world.height(pos[0], pos[1])
                 if pos[2] - base > 3.2:
                     return
-            if self.grid is not None and not self.grid.near_core(pos[0], pos[1]):
-                return
+            if self.par:
+                nf = self.T.open_near(self.T.cell_at(pos[0], pos[1]))
+                if nf < 0 or self.T.patch[nf] != self.T.hub:
+                    return
             u = value / (d + 18)
             if self.chase == (kind, iid):
                 u *= 1.35
@@ -1122,7 +1200,9 @@ class WardenBot(TimedBot):
                         move = self.go(pos[0], pos[1])
                 elif kind == "crate":
                     cp = [pos[0], pos[1], pos[2] + self.cfg["crates"].get("height", 2.4) * 0.5]
-                    if d < 50 and (self.world is None or self.world.los(self.muzzle(), cp)):
+                    lane_ok = self.lane(self.plain_muzzle(), cp) if self.par else \
+                        (self.world is None or self.world.los(self.muzzle(), cp))
+                    if d < 50 and lane_ok:
                         shoot_crate = cp
                         if d < 12:
                             move = unit(self.pos[0] - pos[0], self.pos[1] - pos[1])
@@ -1249,7 +1329,7 @@ class WardenBot(TimedBot):
             radius, height = self.cfg["mech"]["radius"] * sc, self.cfg["mech"]["height"] * sc
             tp = [target["pos"][0], target["pos"][1], target["pos"][2] + height * 0.5]
             tv = target["vel"]
-            if self.world is not None and not self.world.los(mz, tp):
+            if (self.par or self.world is not None) and not self.lane(mz, tp):
                 tp[2] = target["pos"][2] + height * 0.85
             is_mech = True
         elif drone is not None:
