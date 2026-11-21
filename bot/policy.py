@@ -32,10 +32,14 @@ UPGRADE_PREF = [
 ]
 
 # --- tunables (batch A) ---
-RETREAT_DMG_1_5S = 200.0      # HP lost in the last 1.5 s that forces a retreat
-RETREAT_HP_FRAC = 0.55
-ENGAGE_HP_FRAC = 0.70
-HEAL_EXIT_HP_FRAC = 0.90
+# v1.2: practice points ~= house bots we kill, so fight the hunters; retreat only when swamped.
+RETREAT_DMG_1_5S = 300.0      # HP lost in the last 1.5 s that forces a retreat
+RETREAT_HP_FRAC = 0.40
+RETREAT_VISIBLE_N = 3         # this many enemies visible within RETREAT_VISIBLE_R forces a retreat
+RETREAT_VISIBLE_R = 120.0
+ENGAGE_HP_FRAC = 0.55
+HEAL_EXIT_HP_FRAC = 0.75
+PEEK_COVER_R = 10.0           # duel from cover: duck into cover this close while reloading/cooling
 MEMORY_S = 5.0                # "known" enemy window
 LASER_REVERSE_S = 0.5         # reverse the dodge direction this long after charge start
 LASER_JUMP_S = None           # e.g. 0.7 to add a jump; off until tested
@@ -43,7 +47,7 @@ SILENT_FRAC = 0.40            # move length for silent idle drift (0.4 * 11.7 = 
 
 
 class BasePolicy:
-    name = "ctrlz-v1.1-survive"
+    name = "ctrlz-v1.2-hunter"
 
     def __init__(self, hello: mf.Hello) -> None:
         self.cfg = hello["config"]
@@ -96,17 +100,20 @@ class BasePolicy:
         cover_near = None
         if laser_threat is not None:
             cover_near = self.cover_from(pos, laser_threat, 8.0, obs, t)
-        retreat = (dmg_rate > RETREAT_DMG_1_5S or hp_frac < RETREAT_HP_FRAC or len(known) >= 2
-                   or (laser_threat is not None and cover_near is None))
+        close_vis = [m for m in obs["mechs"] if m["kind"] == "mech" and dist2d(m["pos"], pos) < RETREAT_VISIBLE_R]
+        # A damage burst alone just ducks into nearby cover inside the fight (peek_cover);
+        # full retreat/heal only when low or swamped.
+        retreat = hp_frac < RETREAT_HP_FRAC or len(close_vis) >= RETREAT_VISIBLE_N \
+            or (dmg_rate > RETREAT_DMG_1_5S and hp_frac < ENGAGE_HP_FRAC)
         if retreat:
             self.heal = True
-        if self.heal and hp_frac >= HEAL_EXIT_HP_FRAC and not known and t - self.last_damaged_t > 5:
+        if self.heal and hp_frac >= HEAL_EXIT_HP_FRAC and len(close_vis) < RETREAT_VISIBLE_N \
+                and t - self.last_damaged_t > 2:
             self.heal = False
 
         target = self.choose_target(obs, t)
-        engage = (not self.heal and hp_frac > ENGAGE_HP_FRAC and len(known) == 1 and not late_shrink
-                  and target is not None and target["kind"] == "mech"
-                  and target.get("hp", 0) <= me["hp"] * 1.15)
+        engage = (not self.heal and hp_frac > ENGAGE_HP_FRAC and not late_shrink
+                  and target is not None and target["kind"] == "mech")
         if laser_threat is not None and laser_threat.get("_visible"):
             target = laser_threat  # counter-shoot the charger (half speed while charging)
         if target is not None and target["kind"] == "npc" and (self.heal or known):
@@ -136,7 +143,14 @@ class BasePolicy:
                 allow_still, label = False, "heal-npc"
             boost = threat is not None and me["energy"] > 40 and math.hypot(*move) > 0.5
         elif target is not None and target["kind"] == "mech" and engage:
-            move, label = self.combat_move(obs, target, zone_vec, t), f"fight {target['id']}"
+            peek = self.peek_cover(obs, target, dmg_rate, t)
+            if peek is not None:
+                move, label = unit(peek[0] - pos[0], peek[1] - pos[1]), f"duck {target['id']}"
+                allow_still = dist2d(peek, pos) < 2.0
+                if allow_still:
+                    move = (0.0, 0.0)
+            else:
+                move, label = self.combat_move(obs, target, zone_vec, t), f"fight {target['id']}"
             boost = me["energy"] > 0.5 * me["max_energy"]
         elif target is not None and target["kind"] == "mech":
             # Seen but not worth engaging: keep shooting, back off toward cover.
@@ -159,9 +173,12 @@ class BasePolicy:
         if exposed and not allow_still and math.hypot(*move) < 0.5:
             move = self.strafe_vec(obs, threat, t)
 
+        self.swap_drop = None
         take = self.try_take(obs)
         if take is not None:
             act["take"] = take
+            if self.swap_drop is not None:
+                act["drop"] = self.swap_drop
 
         if not allow_still:
             move = self.unstick(obs, move, t)
@@ -219,6 +236,17 @@ class BasePolicy:
                     self.threat_until = t + 2.5
             elif ev["type"] in ("kill", "took", "upgrade"):
                 mf.log(f"t={t:.1f} event {ev}")
+
+    def peek_cover(self, obs, target, dmg_rate, t):
+        """While the gun reloads (or we just ate a burst), duck behind cover within PEEK_COVER_R."""
+        me = obs["self"]
+        gun = next((w for w in me["weapons"] if w and w["kind"] == "gun"), None)
+        reloading = gun is not None and gun.get("reload", 0) > 0.3
+        others_ready = any(w and w["kind"] != "gun" and w["cooldown"] <= 0.1 for w in me["weapons"])
+        burst = dmg_rate > 150
+        if not (burst or (reloading and not others_ready)):
+            return None
+        return self.cover_from(me["pos"], target, PEEK_COVER_R, obs, t)
 
     def npc_attacker(self, obs, t):
         """Nearest visible drone if a drone damaged us in the last 3 s."""
@@ -432,10 +460,19 @@ class BasePolicy:
         k = 1.0 if known else SILENT_FRAC
         return (v[0] * k, v[1] * k), "drift"
 
+    def wants_laser(self, me):
+        return not any(w and w["kind"] == "laser" for w in me["weapons"])
+
     def loot_goal(self, obs):
         me = obs["self"]
         pos = me["pos"]
         best, bd = None, 1e9
+        if self.wants_laser(me):
+            for p in obs["pickups"]:
+                d = dist2d(p["pos"], pos)
+                if p["kind"] == "laser" and d < 120 and abs(p["pos"][2] - pos[2]) < 6 and d < bd:
+                    best, bd = p["pos"], d - 60  # strong preference
+
         if me["weapons"][1] is None:
             held = {w["kind"] for w in me["weapons"] if w}
             for p in obs["pickups"]:
@@ -452,6 +489,14 @@ class BasePolicy:
 
     def try_take(self, obs):
         me = obs["self"]
+        if self.wants_laser(me):
+            for p in obs["pickups"]:
+                if p["kind"] == "laser" and dist2d(p["pos"], me["pos"]) < self.reach - 0.3 \
+                        and abs(p["pos"][2] - me["pos"][2]) < 4:
+                    w1 = me["weapons"][1]
+                    if w1 is not None:
+                        self.swap_drop = 1
+                    return p["id"]
         if me["weapons"][1] is not None:
             return None
         held = {w["kind"] for w in me["weapons"] if w}
