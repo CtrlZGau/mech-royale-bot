@@ -1426,8 +1426,8 @@ func (b *Bot) Act(obs *Obs) Action {
 		break
 	}
 
-	mvOut := [2]float64{round(move[0], 1000), round(move[1], 1000)}
-	aimOut := [2]float64{round(aim[0], 10000), round(aim[1], 10000)}
+	mvOut := [2]float64{move[0], move[1]} // full precision: rounding changes the physics over a match
+	aimOut := [2]float64{aim[0], aim[1]}
 	bo := boost && moving(move)
 	act.Move, act.Aim, act.Fire, act.Boost, act.Jump = &mvOut, &aimOut, &fire, &bo, &jump
 	b.mode = mode
