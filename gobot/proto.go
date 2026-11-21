@@ -28,16 +28,17 @@ type Actor struct {
 	Charging bool     `json:"charging"`
 }
 
+// missing numbers count as zero
 func (a *Actor) hp() float64 {
 	if a.HP == nil {
-		return 1400
+		return 0
 	}
 	return *a.HP
 }
 
 func (a *Actor) maxHP() float64 {
 	if a.MaxHP == nil {
-		return 1400
+		return 0
 	}
 	return *a.MaxHP
 }
@@ -74,7 +75,7 @@ func (w *Weapon) reload() float64 {
 	return *w.Reload
 }
 
-func (w *Weapon) st(k string, d float64) float64 { return fget(w.Stats, k, d) }
+func (w *Weapon) st(k string, _ float64) float64 { return w.Stats[k] } // missing numbers count as zero
 
 type Self struct {
 	ID        int                `json:"id"`
@@ -166,8 +167,9 @@ type Config struct {
 }
 
 type Hello struct {
-	Type string  `json:"type"`
-	Seed float64 `json:"seed"`
+	Type string      `json:"type"`
+	Slot int         `json:"slot"`
+	Seed json.Number `json:"seed"`
 	Map  struct {
 		Dir string `json:"dir"`
 	} `json:"map"`
@@ -186,6 +188,14 @@ type Action struct {
 	Take   *int            `json:"take,omitempty"`
 	Drop   *int            `json:"drop,omitempty"`
 	Debug  map[string]any  `json:"debug,omitempty"`
+}
+
+func bad(v float64) bool { return math.IsNaN(v) || math.IsInf(v, 0) }
+
+// halt: an answer that stops moving and shooting (optionally keeping an aim).
+func halt(tick json.RawMessage, aim *[2]float64) Action {
+	f, z := false, [2]float64{}
+	return Action{Tick: tick, Move: &z, Aim: aim, Fire: &[2]bool{}, Boost: &f, Jump: &f, Reload: &f}
 }
 
 func fget(m map[string]float64, k string, d float64) float64 {
@@ -301,13 +311,11 @@ func main() {
 				Tick json.RawMessage `json:"tick"`
 			}
 			if json.Unmarshal(latest, &tk) == nil && tk.Tick != nil {
-				a := Action{Move: last.Move, Aim: last.Aim, Boost: last.Boost}
-				a.Tick = tk.Tick
-				send(a) // coast on the last move instead of missing the tick
+				send(halt(tk.Tick, nil)) // answer the tick, standing still
 			}
 			continue
 		}
-		act := Action{}
+		act := halt(obs.Tick, nil)
 		if bot != nil {
 			func() {
 				defer func() {
@@ -316,14 +324,21 @@ func main() {
 						if errors <= 5 || errors%100 == 0 {
 							logf("act() failed at t=%.2f (%d so far): %v\n%s", obs.T, errors, r, debug.Stack())
 						}
-						act = Action{Move: last.Move, Aim: last.Aim, Boost: last.Boost}
+						act = halt(obs.Tick, last.Aim) // stop, keep looking where we were
 					}
 				}()
 				act = bot.Act(&obs)
-				last = Action{Move: act.Move, Aim: act.Aim, Boost: act.Boost}
+				act.Tick = obs.Tick
+				if a := act.Aim; a != nil && (bad(a[0]) || bad(a[1])) {
+					act.Aim = nil
+				} else if a != nil {
+					last.Aim = a
+				}
+				if m := act.Move; m != nil && (bad(m[0]) || bad(m[1])) {
+					act.Move = &[2]float64{}
+				}
 			}()
 		}
-		act.Tick = obs.Tick
 		send(act)
 	}
 }

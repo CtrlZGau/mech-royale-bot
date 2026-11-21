@@ -16,6 +16,7 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ type block struct {
 	x0, y0, x1, y1 float64
 }
 
-type sheet struct{ base, top float64 }
+type sheet struct{ base, top float32 }
 
 type Land struct {
 	ox, oy             float64
@@ -99,6 +100,18 @@ type worldFile struct {
 	} `json:"prisms"`
 }
 
+// FlatLand: the arena without terrain or buildings (used only when the map files cannot be read).
+func FlatLand() *Land {
+	L := &Land{ox: -513, oy: -334, fw: 1070, fh: 724, ex0: -512, ex1: 555, ey0: -333, ey1: 388}
+	L.floor = make([]float32, L.fw*L.fh)
+	L.makeBins()
+	L.makeLandCaps()
+	L.makeLayers(&worldFile{})
+	L.layGrid()
+	L.buildHubLink()
+	return L
+}
+
 func LoadLand(mapDir string) (*Land, error) {
 	raw, err := os.ReadFile(filepath.Join(mapDir, "v2", "world.json"))
 	if err != nil {
@@ -119,9 +132,12 @@ func LoadLand(mapDir string) (*Land, error) {
 		return nil, err
 	}
 	n := L.fw * L.fh
+	if n == 0 || len(hb) < 2*n {
+		return nil, fmt.Errorf("terrain file is %d bytes, expected %d", len(hb), 2*n)
+	}
 	L.floor = make([]float32, n)
 	for i := 0; i < n && 2*i+1 < len(hb); i++ {
-		L.floor[i] = float32(float64(int16(binary.LittleEndian.Uint16(hb[2*i:]))) * 0.01)
+		L.floor[i] = float32(int16(binary.LittleEndian.Uint16(hb[2*i:]))) * 0.01
 	}
 	type rings struct {
 		all [][]float64
@@ -300,7 +316,7 @@ func (L *Land) FloorZ(x, y float64) float64 {
 
 // ------------------------------------------------------------------ fine layers
 type piece struct {
-	base, top float64
+	base, top float32
 	bridge    bool
 }
 
@@ -321,7 +337,7 @@ func (L *Land) makeLayers(wf *worldFile) {
 		}
 		j0 := int(math.Ceil(ymin - oy))
 		j1 := int(math.Floor(ymax - oy))
-		pc := piece{p.Base, p.Top, p.Kind == "bridge"}
+		pc := piece{float32(p.Base), float32(p.Top), p.Kind == "bridge"}
 		for j := max(j0, 0); j <= min(j1, fh-1); j++ {
 			y := oy + float64(j) + 1e-4
 			xs = xs[:0]
@@ -355,9 +371,9 @@ func (L *Land) makeLayers(wf *worldFile) {
 	L.sheets = map[int32][]sheet{}
 	for idx, pieces := range spans {
 		sort.SliceStable(pieces, func(a, b int) bool { return pieces[a].base < pieces[b].base })
-		g := float64(L.floor[idx])
+		g := L.floor[idx]
 		top := g
-		deck := -1e9
+		deck := float32(-1e9)
 		low := false
 		for _, pc := range pieces {
 			if pc.top <= top {
@@ -376,21 +392,21 @@ func (L *Land) makeLayers(wf *worldFile) {
 				}
 			}
 		}
-		L.crest[idx] = float32(top)
+		L.crest[idx] = top
 		if deck > top {
-			L.tread[idx] = float32(deck)
+			L.tread[idx] = deck
 		} else {
-			L.tread[idx] = float32(top)
+			L.tread[idx] = top
 		}
 		L.hindered[idx] = top-g > 1.2 || low
 	}
 }
 
-func pyRound(v float64) int { return int(math.RoundToEven(v)) }
+func nearest(v float64) int { return int(math.Round(v)) }
 
 func (L *Land) FineIdx(x, y float64) int {
-	i := min(max(pyRound(x-L.ox), 0), L.fw-1)
-	j := min(max(pyRound(y-L.oy), 0), L.fh-1)
+	i := min(max(nearest(x-L.ox), 0), L.fw-1)
+	j := min(max(nearest(y-L.oy), 0), L.fh-1)
 	return j*L.fw + i
 }
 
@@ -455,7 +471,7 @@ func (L *Land) rockCached(x, y, z float64) bool {
 		return true
 	}
 	for _, s := range L.sheets[int32(idx)] {
-		if s.base < z && z < s.top {
+		if float64(s.base) < z && z < float64(s.top) {
 			return true
 		}
 	}

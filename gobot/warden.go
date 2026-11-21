@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strconv"
 )
 
 const latency = 0.075 // seconds between our decision and the shot leaving
@@ -49,6 +50,7 @@ type Bot struct {
 	phase     string
 	lastHitT  float64
 	attackers map[int]attack
+	closing   map[int]float64 // last measured approach speed per mech (kept while closer than 1 m)
 	enemySeen *omap[*Seen]
 	items     map[string]*omap[*Kept]
 	drones    *omap[*Seen]
@@ -58,8 +60,10 @@ type Bot struct {
 	backing             bool
 	dangerT             float64
 	droneHitT, droneBrg float64
-	chase               *[2]any
+	chaseID             int // loot target being chased (by id), -1 = none
 	chaseT              float64
+	holdC               Vec2    // zone circle at the start of the current shrink
+	holdR, holdFrom     float64 // radius of that circle; shrink_start it belongs to (-1 = none yet)
 	banned              map[int]float64
 	side, sideUntil     float64
 	post                *Vec2
@@ -95,22 +99,41 @@ type Bot struct {
 }
 
 func NewBot(h *Hello) *Bot {
-	b := &Bot{cfg: h.Config, rng: rand.New(rand.NewSource(int64(h.Seed))),
+	b := &Bot{cfg: h.Config, rng: rand.New(rand.NewSource(seedOf(h))),
 		g: globals(), prof: profiles(), phase: "scout",
-		lastHitT: -99, attackers: map[int]attack{}, enemySeen: newOmap[*Seen](),
+		lastHitT: -99, attackers: map[int]attack{}, closing: map[int]float64{}, enemySeen: newOmap[*Seen](),
 		items:  map[string]*omap[*Kept]{"crate": newOmap[*Kept](), "cube": newOmap[*Kept](), "pickup": newOmap[*Kept]()},
 		drones: newOmap[*Seen](), keepID: -1, keepT: -99, lostAt: -99, dangerT: -99, droneHitT: -99,
-		chaseT: -99, banned: map[int]float64{}, side: 1, postT: -99, alive0: -1, coverT: -99,
+		chaseID: -1, chaseT: -99, banned: map[int]float64{}, side: 1, postT: -99, alive0: -1, coverT: -99, holdFrom: -1,
 		droneStruck: map[int]float64{}, stuckSince: -1, unstuckUntil: -1, wpathT: -99, escT: -99,
 		escOffUntil: -1, mode: "start"}
 	applyEnv(b.g, b.prof)
 	b.k = copyMap(b.prof["scout"])
-	L, err := LoadLand(h.Map.Dir)
+	dir := h.Map.Dir
+	if dir == "" {
+		dir = "/arena"
+	}
+	L, err := LoadLand(dir)
 	if err != nil {
-		panic(fmt.Sprintf("map load failed: %v", err))
+		logf("map load failed (%v): playing on a flat arena", err)
+		L = FlatLand()
 	}
 	b.L = L
 	return b
+}
+
+// seedOf: the per-bot seed from hello (0 -> slot + 1), as a signed 64-bit RNG seed.
+func seedOf(h *Hello) int64 {
+	var u uint64
+	if v, err := strconv.ParseUint(string(h.Seed), 10, 64); err == nil {
+		u = v
+	} else if f, err := strconv.ParseFloat(string(h.Seed), 64); err == nil && f > 0 {
+		u = uint64(f)
+	}
+	if u == 0 {
+		return int64(h.Slot) + 1
+	}
+	return int64(u)
 }
 
 func copyMap(m map[string]float64) map[string]float64 {
@@ -142,7 +165,12 @@ func unit(x, y float64) Vec2 {
 
 func moving(v Vec2) bool { return v[0] != 0 || v[1] != 0 }
 
-func (b *Bot) st(k string, d float64) float64 { return fget(b.me.Stats, k, d) }
+func (b *Bot) st(k string, _ float64) float64 {
+	if b.me.Stats["radius"] == 0 {
+		return b.cfg.Mech[k]
+	}
+	return b.me.Stats[k]
+}
 
 func (b *Bot) scale(cubes float64) float64 {
 	return 1 + aget(b.cfg.Cubes, "size_per_cube", 0.05)*cubes
@@ -203,14 +231,14 @@ func (b *Bot) aimingAtMe(m *Actor, tol float64) bool {
 	return math.Abs(wrap(m.Aim[0]-br)) < tol
 }
 
+// approachSpeed: how fast the mech closes on us; when it is within 1 m the last measurement stands.
 func (b *Bot) approachSpeed(m *Actor) float64 {
 	dx, dy := m.Pos[0]-b.pos[0], m.Pos[1]-b.pos[1]
 	d := math.Hypot(dx, dy)
-	if d < 1 {
-		return 0
+	if d > 1 {
+		b.closing[m.ID] = -((m.Vel[0]-b.me.Vel[0])*dx + (m.Vel[1]-b.me.Vel[1])*dy) / d
 	}
-	rv := (m.Vel[0]-b.me.Vel[0])*dx + (m.Vel[1]-b.me.Vel[1])*dy
-	return -rv / d
+	return b.closing[m.ID]
 }
 
 func (b *Bot) struckAgo(id int) float64 {
@@ -223,20 +251,20 @@ func (b *Bot) struckAgo(id int) float64 {
 // ================================================================== memory
 func (b *Bot) remember(obs *Obs) {
 	t := b.t
-	for _, ev := range obs.Events {
-		if ev.Type == "damaged" && ev.Weapon != "zone" {
-			b.lastHitT = t
-			if ev.By != nil && *ev.By < 100 {
-				b.attackers[int(*ev.By)] = attack{t}
-			}
-		}
-	}
+	// mechs in view; a mech unseen for 20 s is forgotten, including that it hit us
 	for i := range obs.Mechs {
 		m := obs.Mechs[i]
 		if m.Kind == "mech" {
 			b.enemySeen.set(m.ID, &Seen{Actor: m, T: t})
 		}
 	}
+	b.enemySeen.each(func(id int, e *Seen) {
+		if t-e.T > 20 {
+			b.enemySeen.del(id)
+			delete(b.attackers, id)
+			delete(b.closing, id)
+		}
+	})
 	eye := Vec3{b.pos[0], b.pos[1], b.pos[2] + b.st("eye_height", 8)}
 	for _, kl := range []struct {
 		key string
@@ -258,12 +286,16 @@ func (b *Bot) remember(obs *Obs) {
 	for i := range obs.Mechs {
 		m := obs.Mechs[i]
 		if m.Kind == "npc" {
-			b.drones.set(m.ID, &Seen{Actor: m, T: t})
+			// line of fire and distance are measured now, when the drone is seen
+			d := &Seen{Actor: m, T: t, d: flat(m.Pos, b.pos)}
+			d.shot = b.clearShot(&d.Actor)
+			b.drones.set(m.ID, d)
 		}
 	}
 	b.drones.each(func(id int, d *Seen) {
 		if t-d.T > 120 {
 			b.drones.del(id)
+			delete(b.droneStruck, id)
 		}
 	})
 	for _, ev := range obs.Events {
@@ -272,19 +304,27 @@ func (b *Bot) remember(obs *Obs) {
 			if ev.Weapon == "npc" && ev.Bearing != nil {
 				b.droneHitT, b.droneBrg = t, *ev.Bearing
 			}
-			if ev.By != nil {
+			if ev.By != nil { // only hits with a known shooter count as being hurt
+				b.lastHitT = t
 				if ev.Bearing != nil {
 					v := *ev.Bearing
 					b.hurtBearing = &v
 				}
-				if *ev.By >= 100 {
-					b.droneStruck[int(*ev.By)] = t
+				// "hit us" is remembered only for a mech or drone we already know
+				id := int(*ev.By)
+				if _, ok := b.enemySeen.get(id); ok {
+					b.attackers[id] = attack{t}
+				}
+				if _, ok := b.drones.get(id); ok {
+					b.droneStruck[id] = t
 				}
 			}
 		case "kill":
 			b.myKills++
 			if ev.Target != nil {
 				b.enemySeen.del(int(*ev.Target))
+				delete(b.attackers, int(*ev.Target))
+				delete(b.closing, int(*ev.Target))
 			}
 		}
 	}
@@ -299,6 +339,10 @@ func (b *Bot) remember(obs *Obs) {
 	if b.g["guard"] != 0 && float64(b.othersDeadTicks) >= b.g["others_dead_ticks"] {
 		b.guard = true
 	}
+	// remember the circle a shrink starts from (the observation's own circle moves while it shrinks)
+	if z := &obs.Zone; b.holdFrom != z.ShrinkStart || t <= z.ShrinkStart {
+		b.holdFrom, b.holdC, b.holdR = z.ShrinkStart, z.Center, z.Radius
+	}
 	want := "scout"
 	if b.guard {
 		want = "guard"
@@ -312,23 +356,32 @@ func (b *Bot) remember(obs *Obs) {
 }
 
 // ================================================================== zone timing
-func zoneHold(z *Zone, t float64) (Vec2, float64) {
+// zoneHold: the safe circle at time t of the current phase, moving from the held start circle to the next one.
+func (b *Bot) zoneHold(z *Zone, t float64) (Vec2, float64) {
 	if t <= z.ShrinkStart || z.ShrinkEnd <= z.ShrinkStart {
-		return z.Center, z.Radius
+		return b.holdC, b.holdR
 	}
 	f := math.Max(0, math.Min(1, (t-z.ShrinkStart)/(z.ShrinkEnd-z.ShrinkStart)))
-	return Vec2{z.Center[0] + (z.NextCenter[0]-z.Center[0])*f, z.Center[1] + (z.NextCenter[1]-z.Center[1])*f},
-		z.Radius + (z.NextRadius-z.Radius)*f
+	return Vec2{b.holdC[0] + (z.NextCenter[0]-b.holdC[0])*f, b.holdC[1] + (z.NextCenter[1]-b.holdC[1])*f},
+		b.holdR + (z.NextRadius-b.holdR)*f
 }
 
-func mustLeaveBy(z *Zone, x, y, pad float64) float64 {
+// zoneNow: the safe circle right now (the observed one if it already differs from the held start circle).
+func (b *Bot) zoneNow(z *Zone) (Vec2, float64) {
+	if b.t <= z.ShrinkStart || math.Abs(z.Radius-b.holdR) > 0.01 || math.Abs(z.Center[0]-b.holdC[0]) > 0.01 {
+		return z.Center, z.Radius
+	}
+	return b.zoneHold(z, b.t)
+}
+
+func (b *Bot) mustLeaveBy(z *Zone, x, y, pad float64) float64 {
 	nc, nr := z.NextCenter, z.NextRadius
 	if math.Hypot(x-nc[0], y-nc[1]) <= nr-pad {
-		return 1e9
+		return math.Inf(1)
 	}
 	for k := 0; k < 25; k++ {
 		tt := z.ShrinkStart + (z.ShrinkEnd-z.ShrinkStart)*float64(k)/24
-		c, r := zoneHold(z, tt)
+		c, r := b.zoneHold(z, tt)
 		if math.Hypot(x-c[0], y-c[1]) > r-pad {
 			return tt
 		}
@@ -352,10 +405,7 @@ func safePoint(z *Zone, x, y float64) (float64, float64) {
 }
 
 func (b *Bot) zoneCost(z *Zone, x, y float64) float64 {
-	c, r := z.Center, z.Radius
-	if b.t > z.ShrinkStart {
-		c, r = zoneHold(z, b.t)
-	}
+	c, r := b.zoneNow(z)
 	cost := 0.0
 	if out := math.Hypot(x-c[0], y-c[1]) - r; out > -5 {
 		cost += 150 + 5*(out+5)
@@ -460,7 +510,7 @@ func (b *Bot) goTo(gx, gy float64) Vec2 {
 			cx, cy := L.CellXY(c)
 			b.wpath = append(b.wpath, Vec2{cx, cy})
 		}
-		b.wpathSet, b.wpathI = true, 0
+		b.wpathSet, b.wpathI = cells != nil, 0
 		b.wpathGoal, b.wpathT = &Vec2{gx, gy}, b.t
 	}
 	path := b.wpath
@@ -963,7 +1013,7 @@ func (b *Bot) dropOK(obs *Obs, d *Drop) bool {
 	if near || (d.Holder != nil && int(*d.Holder) != me.ID) {
 		return false
 	}
-	eta := 1.45 * flat(d.Pos, b.pos) / math.Max(b.st("walk_speed", 11.7), 1)
+	eta := 1.45 * flat(d.Pos, b.pos) / b.st("walk_speed", 11.7)
 	wait := math.Max(0, d.LandsIn-eta)
 	capS := 4.0
 	if d.CaptureS != nil {
@@ -973,7 +1023,7 @@ func (b *Bot) dropOK(obs *Obs, d *Drop) bool {
 	if eta > 15 || wait > 6 || total > 20 {
 		return false
 	}
-	return b.t+total+3 <= mustLeaveBy(&obs.Zone, d.Pos[0], d.Pos[1], 8)
+	return b.t+total+3 <= b.mustLeaveBy(&obs.Zone, d.Pos[0], d.Pos[1], 8)
 }
 
 func (b *Bot) pickLoot(obs *Obs, hpf float64, danger bool) *pick {
@@ -981,22 +1031,19 @@ func (b *Bot) pickLoot(obs *Obs, hpf float64, danger bool) *pick {
 	K := b.k
 	L := b.L
 	z := &obs.Zone
-	c, r := z.Center, z.Radius
-	if t > z.ShrinkStart {
-		c, r = zoneHold(z, t)
-	}
-	walk := math.Max(b.st("walk_speed", 11.7), 1)
+	c, r := b.zoneNow(z)
+	walk := b.st("walk_speed", 11.7)
 	var best *pick
 	bestU := 0.0
 	offer := func(kind string, id int, pos Vec3, value float64) {
-		if b.banned[id] > t {
+		if until, ok := b.banned[id]; ok && until > t {
 			return
 		}
 		d := flat(pos, b.pos)
 		if d > 260 || math.Hypot(pos[0]-c[0], pos[1]-c[1]) > r-6 {
 			return
 		}
-		if t+d*1.4/walk+5 > mustLeaveBy(z, pos[0], pos[1], 6) {
+		if t+d*1.4/walk+5 > b.mustLeaveBy(z, pos[0], pos[1], 6) {
 			return
 		}
 		if pos[2]-L.FloorZ(pos[0], pos[1]) > 3.2 {
@@ -1006,7 +1053,7 @@ func (b *Bot) pickLoot(obs *Obs, hpf float64, danger bool) *pick {
 			return
 		}
 		u := value / (d + 18)
-		if b.chase != nil && b.chase[0] == kind && b.chase[1] == id {
+		if id == b.chaseID {
 			u *= 1.35
 		}
 		if u > bestU {
@@ -1068,14 +1115,14 @@ func (b *Bot) pickLoot(obs *Obs, hpf float64, danger bool) *pick {
 		}
 	}
 	if best == nil {
-		b.chase = nil
+		b.chaseID = -1
 		return nil
 	}
-	if b.chase == nil || b.chase[0] != best.kind || b.chase[1] != best.id {
-		b.chase, b.chaseT = &[2]any{best.kind, best.id}, t
+	if best.id != b.chaseID {
+		b.chaseID, b.chaseT = best.id, t
 	} else if t-b.chaseT > 30 {
 		b.banned[best.id] = t + 60
-		b.chase = nil
+		b.chaseID = -1
 		return nil
 	}
 	return best
@@ -1129,6 +1176,15 @@ func (b *Bot) Act(obs *Obs) Action {
 	finishing := target != nil && target.d < 120 && (target.hp() < 200 || target.hp() < me.HP*0.5)
 
 	// ---- when to back off
+	outgunned := target != nil && target.carries("laser") && laser == nil && target.d > 55 && hpf < 0.8
+	swamped := crowd >= 3 || (crowd == 2 && hpf < 0.65) || outgunned
+	if !b.backing && ((hpf < K["pull_hp"] && t-b.dangerT < 2) || swamped) {
+		b.backing = true
+		b.coverT = -1 // look for cover afresh
+	}
+	if b.backing && !swamped && (hpf > K["steady_hp"] || (t-b.dangerT > 7 && hpf > 0.55)) {
+		b.backing = false
+	}
 	if b.phase == "hunt" {
 		near := 0
 		for _, e := range vis {
@@ -1150,22 +1206,13 @@ func (b *Bot) Act(obs *Obs) Action {
 			b.lostAt = t
 		}
 		b.backing = b.lostAt > 0 && t-b.lostAt < b.g["back_s"]
-	} else {
-		outgunned := target != nil && target.carries("laser") && laser == nil && target.d > 55 && hpf < 0.8
-		swamped := crowd >= 3 || (crowd == 2 && hpf < 0.65) || outgunned
-		if !b.backing && ((hpf < K["pull_hp"] && t-b.dangerT < 2) || swamped) {
-			b.backing = true
-		}
-		if b.backing && !swamped && (hpf > K["steady_hp"] || (t-b.dangerT > 7 && hpf > 0.55)) {
-			b.backing = false
-		}
 	}
 
 	// ---- zone timing
 	gx, gy := safePoint(z, b.pos[0], b.pos[1])
 	zd := math.Hypot(gx-b.pos[0], gy-b.pos[1])
-	need := zd*1.45/math.Max(b.st("walk_speed", 11.7), 1) + 4
-	leaveBy := mustLeaveBy(z, b.pos[0], b.pos[1], 8)
+	need := zd*1.45/b.st("walk_speed", 11.7) + 4
+	leaveBy := b.mustLeaveBy(z, b.pos[0], b.pos[1], 8)
 	zoneNow := !me.InZone || t+need+3 >= leaveBy
 	zoneSoon := t+need+14 >= leaveBy
 
@@ -1199,15 +1246,18 @@ func (b *Bot) Act(obs *Obs) Action {
 		} else {
 			move, mode = b.goTo(gx, gy), "flee"
 			if t-b.droneHitT < 3 && !moving(move) {
-				s := -1.0
-				if math.Mod(t, 3) < 1.5 {
-					s = 1
+				s := 1.0 // side-step the drone, switching sides every 1.5 s
+				if math.Mod(t, 3) > 1.5 {
+					s = -1
 				}
 				move = Vec2{-math.Sin(b.droneBrg) * s, math.Cos(b.droneBrg) * s}
 			}
 		}
-	} else if (b.phase == "scout" || b.phase == "guard") && target == nil && t-b.lastHitT < 2.5 && !endgame && b.hurtBearing != nil {
-		hb := *b.hurtBearing
+	} else if (b.phase == "scout" || b.phase == "guard") && target == nil && t-b.lastHitT < 2.5 && !endgame {
+		hb := 0.0
+		if b.hurtBearing != nil {
+			hb = *b.hurtBearing
+		}
 		ghost := &Seen{Actor: Actor{Pos: Vec3{b.pos[0] + math.Cos(hb)*80, b.pos[1] + math.Sin(hb)*80, b.pos[2]}}}
 		if mv, ok := b.takeCover(append([]*Seen{ghost}, vis...)); ok {
 			move, mode = mv, "hide"
@@ -1268,7 +1318,7 @@ func (b *Bot) Act(obs *Obs) Action {
 			switch pk.kind {
 			case "drone":
 				dr, ok := b.drones.get(pk.id)
-				if ok && t-dr.T < 1 && d < 75 && b.clearShot(&dr.Actor) {
+				if ok && t-dr.T < 1 && dr.shot && dr.d < 75 {
 					shootDrone = dr
 					move = b.brawlStep(obs, &dr.Actor, vis, 1, 0)
 				} else {
@@ -1296,7 +1346,7 @@ func (b *Bot) Act(obs *Obs) Action {
 			if post := b.scoutPost(obs); post != nil && math.Hypot(post[0]-b.pos[0], post[1]-b.pos[1]) > 3 {
 				move, mode = b.goTo(post[0], post[1]), "post"
 				if !danger && t-b.lastHitT > 6 {
-					q := math.Min(1, 4.6/math.Max(b.st("walk_speed", 11.7), 1)) // silent walk
+					q := math.Min(1, 4.6/b.st("walk_speed", 11.7)) // silent walk
 					move = Vec2{move[0] * q, move[1] * q}
 				}
 			}
@@ -1335,7 +1385,7 @@ func (b *Bot) Act(obs *Obs) Action {
 	}
 
 	// ---- fire control
-	aim, fire := b.fire(target, shootDrone, shootCrate, vis, move, hpf)
+	aim, fire, defended := b.fire(target, shootDrone, shootCrate, vis, move, hpf)
 	if target == nil && foe != nil {
 		for i := 0; i < 2; i++ {
 			w := b.slot(i)
@@ -1347,9 +1397,9 @@ func (b *Bot) Act(obs *Obs) Action {
 	}
 
 	// ---- reload
-	if gun != nil && gun.reload() <= 0 && gun.ammo(99) < gun.st("mag", 12) {
-		if target == nil && shootDrone == nil && shootCrate == nil &&
-			(gun.ammo(99) <= gun.st("mag", 12)*0.6 || t-b.dangerT > 3) {
+	if gun != nil && gun.reload() <= 0 && gun.ammo(0) < gun.st("mag", 12) {
+		if target == nil && shootDrone == nil && shootCrate == nil && !defended &&
+			(gun.ammo(0) <= gun.st("mag", 12)*0.6 || t-b.dangerT > 3) {
 			tr := true
 			act.Reload = &tr
 		}
@@ -1381,12 +1431,19 @@ func (b *Bot) Act(obs *Obs) Action {
 	bo := boost && moving(move)
 	act.Move, act.Aim, act.Fire, act.Boost, act.Jump = &mvOut, &aimOut, &fire, &bo, &jump
 	b.mode = mode
-	act.Debug = map[string]any{"label": fmt.Sprintf("%s:%s hp%.0f c%d", b.phase, mode, me.HP, int(me.Cubes))}
+	tid := -1
+	if target != nil {
+		tid = target.ID
+	}
+	act.Debug = map[string]any{"label": fmt.Sprintf("%s:%s hp%.0f c%d t%d", b.phase, mode, me.HP, int(me.Cubes), tid)}
 	return act
 }
 
 // ================================================================== fire control
 func leadAim(mz, tp, tv Vec3, speed float64, ground bool) (float64, float64) {
+	if speed <= 0 {
+		speed = 252
+	}
 	extra := 0.0
 	var px, py, pz float64
 	for i := 0; i < 4; i++ {
@@ -1396,12 +1453,12 @@ func leadAim(mz, tp, tv Vec3, speed float64, ground bool) (float64, float64) {
 			pz += tv[2] * tt * 0.5
 		}
 		d := math.Sqrt((px-mz[0])*(px-mz[0]) + (py-mz[1])*(py-mz[1]) + (pz-mz[2])*(pz-mz[2]))
-		extra = math.Max(0, d-3) / math.Max(speed, 1)
+		extra = math.Max(0, d-3) / speed
 	}
 	return math.Atan2(py-mz[1], px-mz[0]), math.Atan2(pz-mz[2], math.Hypot(px-mz[0], py-mz[1]))
 }
 
-func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec2, hpf float64) (Vec2, [2]bool) {
+func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec2, hpf float64) (Vec2, [2]bool, bool) {
 	me := b.me
 	t := b.t
 	var fire [2]bool
@@ -1412,7 +1469,7 @@ func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec
 		var best *Seen
 		offBest := 0.7
 		b.drones.each(func(_ int, dr *Seen) {
-			if t-dr.T > 0.5 || flat(dr.Pos, b.pos) > 150 || !b.clearShot(&dr.Actor) {
+			if t-dr.T > 0.5 || !dr.shot || dr.d > 150 {
 				return
 			}
 			off := math.Abs(wrap(math.Atan2(dr.Pos[1]-b.pos[1], dr.Pos[0]-b.pos[0]) - b.droneBrg))
@@ -1456,7 +1513,7 @@ func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec
 		var watch *Seen
 		for _, e := range vis {
 			if e.hot || b.struckAgo(e.ID) < 6 {
-				if watch == nil || flat(e.Pos, b.pos) < flat(watch.Pos, b.pos) {
+				if watch == nil || e.d < watch.d { // distance as measured when last seen
 					watch = e
 				}
 			}
@@ -1474,7 +1531,7 @@ func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec
 		default:
 			yaw = me.Aim[0] + 0.35
 		}
-		return Vec2{wrap(yaw), 0}, fire
+		return Vec2{yaw, math.Max(b.st("min_pitch", -0.7), math.Min(b.st("max_pitch", 1.3), 0))}, fire, defend
 	}
 
 	dist := math.Hypot(tp[0]-b.pos[0], tp[1]-b.pos[1])
@@ -1515,6 +1572,22 @@ func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec
 			if dist < w.st("range", 45)-1.5 && math.Abs(wrap(hy-ay)) < cone*0.5-0.05 && me.Energy >= w.st("energy", 3) {
 				fire[i] = true
 			}
+		case "mortar":
+			if !isMech || w.Cooldown > 0.25 || dist < 16 || dist > 200 {
+				continue
+			}
+			tube := Vec3{mz[0], mz[1], b.pos[2] + b.st("height", 9) + 0.5}
+			feet := Vec3{tp[0], tp[1], tp[2] - height*0.5}
+			if lobY, lobP, ok := b.lob(tube, feet, tv, w.st("speed", 0), w.st("gravity", 0)); ok {
+				if gun == nil || gun.reload() > 0 || gun.ammo(0) == 0 || !gunOK {
+					aim = Vec2{lobY, lobP}
+				}
+				ey := math.Max(0, math.Abs(wrap(lobY-ay))-b.st("turn_rate", 4)*0.05)
+				ep := math.Max(0, math.Abs(lobP-ap)-b.st("pitch_rate", 3)*0.05)
+				if ey < 0.04 && ep < 0.03 {
+					fire[i] = true
+				}
+			}
 		case "laser":
 			if !isMech || dist > w.st("range", 280)*0.97 {
 				continue
@@ -1547,7 +1620,38 @@ func (b *Bot) fire(target *Seen, drone *Seen, crate *Vec3, vis []*Seen, move Vec
 		}
 	}
 	aim[1] = math.Max(b.st("min_pitch", -0.7), math.Min(b.st("max_pitch", 1.3), aim[1]))
-	return aim, fire
+	return aim, fire, defend
+}
+
+// lob: low-arc mortar solution from the tube to a (moving) ground point; fails if the arc meets anything solid.
+func (b *Bot) lob(tube, feet, tv Vec3, v, g float64) (float64, float64, bool) {
+	if v <= 0 || g <= 0 {
+		return 0, 0, false
+	}
+	var yaw, pitch, flight float64
+	for k := 0; k < 3; k++ {
+		px, py := feet[0]+tv[0]*(latency+flight), feet[1]+tv[1]*(latency+flight)
+		run := math.Hypot(px-tube[0], py-tube[1])
+		rise := feet[2] - tube[2]
+		disc := v*v*v*v - g*(g*run*run+2*rise*v*v)
+		if disc < 0 || run < 1 {
+			return 0, 0, false
+		}
+		pitch = math.Atan((v*v - math.Sqrt(disc)) / (g * run))
+		yaw = math.Atan2(py-tube[1], px-tube[0])
+		flight = run / (v * math.Cos(pitch))
+	}
+	if pitch < b.st("min_pitch", -0.7) || pitch > b.st("max_pitch", 1.3) {
+		return 0, 0, false
+	}
+	c, sn := math.Cos(pitch), math.Sin(pitch)
+	for tt := 0.1; tt < flight*0.9; tt += 0.1 {
+		d := v * c * tt
+		if b.L.IsRock(tube[0]+math.Cos(yaw)*d, tube[1]+math.Sin(yaw)*d, tube[2]+v*sn*tt-0.5*g*tt*tt) {
+			return 0, 0, false
+		}
+	}
+	return yaw, pitch, true
 }
 
 func fgetI(m map[int]float64, k int, d float64) float64 {

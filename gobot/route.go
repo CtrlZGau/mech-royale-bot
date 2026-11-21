@@ -82,8 +82,8 @@ func (L *Land) layGrid() {
 }
 
 func (L *Land) CellAt(x, y float64) int {
-	ci := min(max(pyRound((x-L.ox)/pitch), 0), L.cols-1)
-	cj := min(max(pyRound((y-L.oy)/pitch), 0), L.rows-1)
+	ci := min(max(nearest((x-L.ox)/pitch), 0), L.cols-1)
+	cj := min(max(nearest((y-L.oy)/pitch), 0), L.rows-1)
 	return cj*L.cols + ci
 }
 
@@ -271,66 +271,62 @@ func (L *Land) Airiness(x, y float64) float64 {
 }
 
 // ------------------------------------------------------------------ A* (whole search in one call)
-type heapItem struct {
-	f float64
-	c int32
+// Costs are kept in single precision and the open list is a plain binary heap ordered by f only.
+type openEntry struct {
+	f    float32
+	cell int32
 }
 
-type minHeap []heapItem
+type openList []openEntry
 
-func (h minHeap) less(a, b int) bool {
-	return h[a].f < h[b].f || (h[a].f == h[b].f && h[a].c < h[b].c)
-}
-
-func (h *minHeap) push(it heapItem) {
-	*h = append(*h, it)
+func (h *openList) add(e openEntry) {
+	*h = append(*h, e)
 	s := *h
-	i := len(s) - 1
-	for i > 0 {
-		p := (i - 1) / 2
-		if !s.less(i, p) {
+	for i := len(s) - 1; i > 0; {
+		up := (i - 1) / 2
+		if s[up].f <= s[i].f {
 			break
 		}
-		s[i], s[p] = s[p], s[i]
-		i = p
+		s[up], s[i] = s[i], s[up]
+		i = up
 	}
 }
 
-func (h *minHeap) pop() heapItem {
+func (h *openList) take() openEntry {
 	s := *h
-	top := s[0]
-	last := len(s) - 1
-	s[0] = s[last]
-	s = s[:last]
-	i := 0
-	for {
-		l, r, m := 2*i+1, 2*i+2, i
-		if l < len(s) && s.less(l, m) {
-			m = l
+	first := s[0]
+	n := len(s) - 1
+	s[0] = s[n]
+	s = s[:n]
+	for i := 0; ; {
+		a, c, pick := 2*i+1, 2*i+2, i
+		if a < n && s[a].f < s[pick].f {
+			pick = a
 		}
-		if r < len(s) && s.less(r, m) {
-			m = r
+		if c < n && s[c].f < s[pick].f {
+			pick = c
 		}
-		if m == i {
+		if pick == i {
 			break
 		}
-		s[i], s[m] = s[m], s[i]
-		i = m
+		s[i], s[pick] = s[pick], s[i]
+		i = pick
 	}
 	*h = s
-	return top
+	return first
 }
 
 type router struct {
-	cost  []float64
+	cost  []float32
 	came  []int32
 	stamp []uint32
 	shut  []uint32
 	gen   uint32
-	heap  minHeap
+	open  openList
 }
 
-// Route: cells from start to goal (or to the closest reached cell when the goal is out of reach).
+// Route: cells from start to goal (or to the closest reached cell when the goal is out of reach);
+// nil when either end has no open cell nearby.
 func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
 	s := L.OpenNear(L.CellAt(sx, sy))
 	g := L.OpenNear(L.CellAt(gx, gy))
@@ -343,7 +339,7 @@ func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
 	cols, rows := L.cols, L.rows
 	n := cols * rows
 	if len(R.cost) != n {
-		R.cost = make([]float64, n)
+		R.cost = make([]float32, n)
 		R.came = make([]int32, n)
 		R.stamp = make([]uint32, n)
 		R.shut = make([]uint32, n)
@@ -351,23 +347,20 @@ func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
 	R.gen++
 	gen := R.gen
 	gi, gj := g%cols, g/cols
-	h := func(c int) float64 {
-		dx, dy := abs(c%cols-gi), abs(c/cols-gj)
-		mn, mx := min(dx, dy), max(dx, dy)
-		return (float64(mx) + 0.4142*float64(mn)) * pitch * 1.15
+	h := func(c int) float32 {
+		dx, dy := float64(abs(c%cols-gi)), float64(abs(c/cols-gj))
+		return float32((math.Max(dx, dy) + 0.4142*math.Min(dx, dy)) * pitch * 1.15)
 	}
-	R.heap = R.heap[:0]
+	R.open = R.open[:0]
 	R.cost[s], R.came[s], R.stamp[s] = 0, -1, gen
-	R.heap.push(heapItem{h(s), int32(s)})
+	R.open.add(openEntry{h(s), int32(s)})
 	best, bestH := s, h(s)
-	expanded := 0
-	for len(R.heap) > 0 && expanded < maxExpand {
-		c := int(R.heap.pop().c)
+	for expanded := 0; len(R.open) > 0 && expanded < maxExpand; expanded++ {
+		c := int(R.open.take().cell)
 		if R.shut[c] == gen {
 			continue
 		}
 		R.shut[c] = gen
-		expanded++
 		if c == g {
 			best = c
 			break
@@ -386,35 +379,29 @@ func (L *Land) Route(R *router, sx, sy, gx, gy float64, maxExpand int) []int {
 			if R.shut[nb] == gen || !L.CanHop(c, nb, diag) {
 				continue
 			}
-			step := pitch
+			step := float32(pitch)
 			if diag {
 				if L.sealed[cj*cols+i] || L.sealed[j*cols+ci] {
 					continue
 				}
 				step *= 1.4142
 			}
-			if cl := float64(L.margin[nb]); cl < 4 {
+			if cl := L.margin[nb]; cl < 4 {
 				step *= 1 + (4-cl)*0.15
 			}
 			ng := R.cost[c] + step
 			if R.stamp[nb] != gen || ng < R.cost[nb] {
-				R.stamp[nb] = gen
-				R.cost[nb] = ng
-				R.came[nb] = int32(c)
-				R.heap.push(heapItem{ng + h(nb), int32(nb)})
+				R.cost[nb], R.came[nb], R.stamp[nb] = ng, int32(c), gen
+				R.open.add(openEntry{ng + h(nb), int32(nb)})
 			}
 		}
 	}
 	var path []int
-	for c := best; c >= 0; {
+	for c := best; c >= 0; c = int(R.came[c]) {
 		path = append(path, c)
 		if c == s {
 			break
 		}
-		if R.stamp[c] != gen {
-			break
-		}
-		c = int(R.came[c])
 	}
 	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
 		path[i], path[j] = path[j], path[i]
