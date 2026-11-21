@@ -14,10 +14,18 @@ Flags (env MB_FLAGS="anchor,aggro3" or the DEFAULT_FLAGS set below for the submi
   farmplus: farm crates within 170 m above 50% HP and drones within 190 m above 60% (mechbot 110/60%, 130/75%).
   cubeplus: detour for cubes within 150 m (mechbot 90).
   healmore: heal in cover up to 92% HP (mechbot 80%).
+  guntight: gun gate 0.5 x radius, 110 m vs moving targets.
+  retreatearly / retreatlate: shift mechbot's retreat HP thresholds up / down.
+  oppwide : opportunity fights out to 130 m, HP > 70%, vs targets up to 1.2x our HP.
+  close50 / close90: always-fight distance 50 / 90 m (mechbot 70).
+  MB_P env: "name=value,..." overrides any threshold attribute (tuning).
+  focus   : finish kills: target score weights enemy HP 0.08/HP (mechbot 0.03), stickiness 6 s / -90 (3 s / -45).
+  npcsafe : farm drones only above 92% HP and within 90 m (mechbot 75%, 130 m); drones killed mechbot in 12/96 sim matches.
   aggro   : any phase: fight a visible mech within 100 m while HP > 75% and no other mech within 160 m.
 """
 import math
 import os
+import time
 
 import mechfight as mf
 from mb_bot import TimedBot, dist2, unit, wrap
@@ -50,6 +58,32 @@ class V3Bot(TimedBot):
             self.cube_r = 150.0
         if "healmore" in self.flags:
             self.heal_hp = 0.92
+        # state machine thresholds (mechbot defaults)
+        self.r_low, self.r_mid3, self.r_race, self.r_two = 0.3, 0.5, 0.4, 0.55
+        self.opp_d, self.opp_hp, self.opp_ratio, self.close_d = 100.0, 0.8, 1.0, 70.0
+        self.gun_gate = 0.5 if "guntight" in self.flags else self.gun_gate
+        self.gun_move_max = 110.0 if "guntight" in self.flags else self.gun_move_max
+        if "retreatearly" in self.flags:
+            self.r_low, self.r_race, self.r_two = 0.4, 0.5, 0.65
+        if "retreatlate" in self.flags:
+            self.r_low, self.r_race, self.r_two = 0.22, 0.3, 0.45
+        if "oppwide" in self.flags:
+            self.opp_d, self.opp_hp, self.opp_ratio = 130.0, 0.7, 1.2
+        if "close50" in self.flags:
+            self.close_d = 50.0
+        if "close90" in self.flags:
+            self.close_d = 90.0
+        self.hp_w, self.stick_s, self.stick_b = 0.03, 3.0, 45.0
+        if "focus" in self.flags:
+            self.hp_w, self.stick_s, self.stick_b = 0.08, 6.0, 90.0
+        if "npcsafe" in self.flags:
+            self.npc_hp, self.npc_r = 0.92, 90.0
+        # env overrides for tuning: MB_P="r_two=0.6,opp_d=120"
+        for kv in (os.environ.get("MB_P") or "").split(","):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                if hasattr(self, k.strip()):
+                    setattr(self, k.strip(), float(v))
         mf.log(f"policy {self.name}")
 
     # ------------------------------------------------------------------ helpers
@@ -204,6 +238,31 @@ class V3Bot(TimedBot):
         return self.wander, "wander", None
 
 
+    def pick_target(self, enemies):
+        best, bs = None, 1e18
+        x, y, z = self.pos
+        eye = [x, y, z + self.me["stats"].get("eye_height", 8)]
+        for e in enemies:
+            d = dist2(e["pos"], self.pos)
+            if d > 260:
+                continue
+            s = d
+            if self.world is not None:
+                tp = [e["pos"][0], e["pos"][1], e["pos"][2] + 5]
+                if not self.world.los(eye, tp):
+                    s += 90
+            a = self.attackers.get(e["id"])
+            if a and self.t - a[0] < 4:
+                s -= 150 if self.t - a[0] < 1.5 else 70
+            s += e.get("hp", 1400) * self.hp_w
+            ct = getattr(self, "cur_target", None)
+            if ct and ct[0] == e["id"] and self.t - ct[1] < self.stick_s:
+                s -= self.stick_b
+            if s < bs:
+                best, bs = e, s
+        return best
+
+
     # ------------------------------------------------------------------ dodge2
     def dodge(self, obs):
         d = super().dodge(obs)
@@ -231,6 +290,130 @@ class V3Bot(TimedBot):
             side = -side
         self.note = "ldodge"
         return self.probe_dir((-uy * side, ux * side), 6.0)
+
+    def _mb_act(self, obs):
+        t0 = time.perf_counter()
+        self.t = t = obs["t"]
+        me = obs["self"]
+        self.me = me
+        self.pos = me["pos"]
+        self.obs = obs
+        act = {}
+
+        self.update_memory(obs)
+        if obs.get("offer"):
+            act["pick"] = self.choose_upgrade(obs["offer"])
+        self.manage_weapons(obs, act)
+
+        enemies = [m for m in obs["mechs"] if m["kind"] == "mech"]
+        npcs = [m for m in obs["mechs"] if m["kind"] == "npc"]
+        target = self.pick_target(enemies)
+
+        hpf = me["hp"] / max(1.0, me["max_hp"])
+        move = None
+        boost = False
+        jump = False
+        aim_target = None  # (point, vel, radius, kind)
+
+        zone_urgent, zone_goal = self.zone_status(obs)
+
+        if target is not None:
+            tp = target["pos"]
+            d = dist2(tp, self.pos)
+            enemy_hp = target.get("hp", 1400)
+            n_close = sum(1 for e in enemies if dist2(e["pos"], self.pos) < 160)
+            retreat = hpf < self.r_low and (enemy_hp > me["hp"] * 1.2 or n_close >= 2)
+            retreat = retreat or (hpf < self.r_mid3 and n_close >= 3)
+            # losing the damage race: break off and heal while we still can
+            retreat = retreat or (hpf < self.r_race and enemy_hp > me["hp"] * 1.6) or (hpf < self.r_two and n_close >= 2)
+            aim_target = self.mech_aim_target(target)
+            # Don't start fights we don't need (the winning house bots are the passive ones).
+            # Fight back when attacked, when it's close, when it's nearly dead, or when it's lining up a laser on us.
+            a = self.attackers.get(target["id"])
+            attacked_by = a is not None and t - a[0] < 8
+            engaged_any = any(t - a2[0] < 6 for a2 in self.attackers.values())
+            weak = enemy_hp < 0.4 * target.get("max_hp", 1400) and d < 110 and hpf > 0.35
+            threat = bool(target.get("charging")) and self.aimed_at_me(target, 0.15)
+            # a mech pointing its gun at us (or walking at us) is coming for us: shoot first
+            tv = target.get("vel", [0, 0, 0])
+            closing = (tv[0] * (self.pos[0] - tp[0]) + tv[1] * (self.pos[1] - tp[1])) / max(d, 1.0) > 4.0
+            hunting_us = d < 130 and (self.aimed_at_me(target, 0.12) or (closing and self.aimed_at_me(target, 0.5)))
+            # a good opportunity: a lone mech in reliable gun range, and we're healthier
+            opportunity = d < self.opp_d and hpf > self.opp_hp and enemy_hp <= me["hp"] * self.opp_ratio and n_close == 1
+            fight = attacked_by or d < self.close_d or weak or threat or hunting_us or opportunity or (engaged_any and d < 120)
+            self.cur_target = (target["id"], t)
+            if retreat:
+                self.mode = "retreat"
+                move, boost = self.retreat_move(enemies, zone_goal)
+            elif fight:
+                self.mode = "fight"
+                move, boost = self.fight_move(target, d, zone_goal)
+            else:
+                # ignore it: carry on with our plan (no farming noise), keep our front armor toward it
+                self.mode = "avoid"
+                aim_target = None
+                self.face = target
+                goal, kind, extra = self.choose_goal(obs, npcs, zone_urgent, zone_goal, hpf, quiet=True)
+                move = self.navigate(goal) if goal else (0.0, 0.0)
+                if kind == "drop_hold" and dist2(goal, self.pos) < extra * 0.5:
+                    move = (0.0, 0.0)
+            # cubes nearby are worth a detour unless the enemy is on top of us
+            if self.mode != "retreat" and d > 40:
+                cube = min(obs.get("cubes", []), key=lambda c: dist2(c["pos"], self.pos), default=None)
+                if cube is not None and dist2(cube["pos"], self.pos) < 25 and abs(cube["pos"][2] - self.pos[2]) < 4:
+                    move = self.blend(self.navigate((cube["pos"][0], cube["pos"][1])), move, 0.75)
+                    self.note = "cube"
+            if zone_urgent:
+                zm = self.navigate(zone_goal)
+                move = self.blend(zm, move, 0.65)
+                boost = boost or me["energy"] > 30
+        else:
+            goal, kind, extra = self.choose_goal(obs, npcs, zone_urgent, zone_goal, hpf)
+            self.mode = kind
+            if kind in ("npc", "crate") and extra is not None:
+                aim_target = extra
+                tp = extra[0]
+                d = dist2(tp, self.pos)
+                stand = 45.0 if kind == "npc" else 25.0
+                if d > stand or not self.has_los(tp):
+                    move = self.navigate(goal)
+                else:
+                    move = self.strafe_move(tp, d, stand)
+            elif kind == "drop_hold":
+                move = (0.0, 0.0) if dist2(goal, self.pos) < extra * 0.5 else self.navigate(goal)
+            else:
+                move = self.navigate(goal) if goal else (0.0, 0.0)
+            boost = zone_urgent or (not me["in_zone"]) or (kind in ("drop", "cube", "pickup") and me["energy"] > 60)
+
+        # dodges override movement
+        dodge = self.dodge(obs)
+        if dodge is not None:
+            move = dodge
+            boost = me["energy"] > 15
+        for e in enemies:
+            if e.get("charging") and self.aimed_at_me(e, 0.12):
+                jump = me["grounded"] and me["energy"] > 25
+                boost = True
+        # stuck handling
+        move, sj, sb = self.unstick(move)
+        jump = jump or sj
+        boost = boost or sb
+
+        # aim + fire
+        fire = [False, False]
+        if aim_target is not None:
+            aim, fire = self.fire_control(aim_target, act)
+        else:
+            aim = self.scan_aim(move)
+        self.reload_logic(act, aim_target is None)
+
+        mx, my = move
+        act.update(move=[round(mx, 3), round(my, 3)], aim=[round(aim[0], 4), round(aim[1], 4)],
+                   fire=fire, boost=bool(boost and (me["energy"] > 8)), jump=bool(jump))
+        self.last_move = move
+        el = (time.perf_counter() - t0) * 1000
+        mf.draw.label(f"{self.mode} hp{me['hp']:.0f} c{me['cubes']:.0f} {self.note} {el:.0f}ms")
+        return act
 
     # ------------------------------------------------------------------ fire control (mechbot's, parameterised)
     def fire_control(self, tgt, act):
@@ -365,7 +548,8 @@ class V3Bot(TimedBot):
                         fake = tgt["id"]
                         self.attackers[fake] = (obs["t"] - 7.9, None)
         try:
-            return super().act(obs)
+            self._t0 = time.perf_counter()
+            return self._mb_act(obs)
         finally:
             if fake is not None and self.attackers.get(fake, (None,))[1] is None \
                     and abs(self.attackers[fake][0] - (obs["t"] - 7.9)) < 1e-6:
